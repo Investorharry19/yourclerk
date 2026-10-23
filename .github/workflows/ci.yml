@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: yourclerk
+          POSTGRES_PASSWORD: yourclerk
+          POSTGRES_DB: yourclerk
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U yourclerk -d yourclerk"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://yourclerk:yourclerk@localhost:5432/yourclerk?sslmode=disable
+      TEST_DATABASE_URL: postgres://yourclerk:yourclerk@localhost:5432/yourclerk?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Migrate up
+        run: make migrate-up
+      - name: Migrate down and up again
+        run: make migrate-down && make migrate-up
+      - name: Test
+        run: go test ./... -race -count=1
