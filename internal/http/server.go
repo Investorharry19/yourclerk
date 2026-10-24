@@ -18,13 +18,15 @@ type Pinger interface {
 }
 
 type Server struct {
-	log   *slog.Logger
-	db    Pinger
-	users UserStore
+	log      *slog.Logger
+	db       Pinger
+	users    UserStore
+	sessions SessionStore
+	opts     Options
 }
 
-func NewServer(log *slog.Logger, db Pinger, users UserStore) *Server {
-	return &Server{log: log, db: db, users: users}
+func NewServer(log *slog.Logger, db Pinger, users UserStore, sessions SessionStore, opts Options) *Server {
+	return &Server{log: log, db: db, users: users, sessions: sessions, opts: opts.withDefaults()}
 }
 
 // Handler builds the router with all middleware applied.
@@ -39,6 +41,14 @@ func (s *Server) Handler() nethttp.Handler {
 	r.Route("/v1", func(r chi.Router) {
 		r.Post("/signup", s.handleSignup)
 		r.Post("/login", s.handleLogin)
+
+		r.Group(func(r chi.Router) {
+			r.Use(s.requireAuth)
+			r.Get("/me", s.handleMe)
+			r.Post("/logout", s.handleLogout)
+			r.Get("/sessions", s.handleListSessions)
+			r.Delete("/sessions/{id}", s.handleRevokeSession)
+		})
 	})
 	return r
 }

@@ -1,0 +1,39 @@
+package auth
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
+	"time"
+)
+
+const (
+	// TokenBytes is the amount of randomness in a session token (256 bits).
+	TokenBytes = 32
+
+	// AbsoluteTTL is the longest a session can live, however active.
+	AbsoluteTTL = 30 * 24 * time.Hour
+	// IdleTTL is how long a session may sit unused before it dies.
+	IdleTTL = 7 * 24 * time.Hour
+)
+
+// NewSessionToken returns a random token for the cookie and its SHA-256 hash
+// for the database. It uses crypto/rand, never math/rand.
+//
+// A fast hash is fine here (unlike for passwords) because the token already
+// has 256 bits of entropy, so there is nothing to brute-force.
+func NewSessionToken() (token string, hash []byte, err error) {
+	b := make([]byte, TokenBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", nil, fmt.Errorf("generate session token: %w", err)
+	}
+	token = base64.RawURLEncoding.EncodeToString(b)
+	return token, HashToken(token), nil
+}
+
+// HashToken returns the SHA-256 hash used to look a token up in the database.
+func HashToken(token string) []byte {
+	sum := sha256.Sum256([]byte(token))
+	return sum[:]
+}

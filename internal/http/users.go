@@ -162,7 +162,11 @@ func (s *Server) handleLogin(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 
-	// Stage 1 only reports success. Stage 2 will create a session here.
+	if err := s.startSession(w, r, user.ID); err != nil {
+		s.log.Error("login: start session", "err", err, "user_id", user.ID)
+		WriteError(w, nethttp.StatusInternalServerError, "internal_error", "Something went wrong")
+		return
+	}
 	WriteJSON(w, nethttp.StatusOK, map[string]any{"user": toUserResponse(user)})
 }
 

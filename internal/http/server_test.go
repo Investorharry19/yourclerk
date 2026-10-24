@@ -17,7 +17,7 @@ func (f fakeDB) Ping(context.Context) error { return f.err }
 
 func newTestServer(db Pinger) nethttp.Handler {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewServer(log, db, nil).Handler()
+	return NewServer(log, db, nil, nil, Options{}).Handler()
 }
 
 func TestHealthz(t *testing.T) {

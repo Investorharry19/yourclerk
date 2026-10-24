@@ -15,6 +15,11 @@ type Config struct {
 	DatabaseURL string
 	SMTPAddr    string
 	SecretKey   string
+
+	// CookieSecure sets the Secure flag on session cookies. It defaults to
+	// true everywhere except APP_ENV=development, because browsers will not
+	// send Secure cookies over plain http (curl and cookie jars included).
+	CookieSecure bool
 }
 
 // Load reads configuration from the environment and validates it.
@@ -35,6 +40,12 @@ func load(get func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("PORT must be a number between 1 and 65535")
 	}
 	cfg.Port = port
+
+	secure, err := strconv.ParseBool(withDefault(get("COOKIE_SECURE"), strconv.FormatBool(cfg.Env != "development")))
+	if err != nil {
+		return Config{}, errors.New("COOKIE_SECURE must be true or false")
+	}
+	cfg.CookieSecure = secure
 
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")

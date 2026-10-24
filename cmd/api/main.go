@@ -47,9 +47,11 @@ func run() error {
 	}
 	defer db.Close()
 
+	go cleanupSessions(ctx, log, db, time.Hour)
+
 	srv := &nethttp.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           apphttp.NewServer(log, db, db).Handler(),
+		Handler:           apphttp.NewServer(log, db, db, db, apphttp.Options{CookieSecure: cfg.CookieSecure}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,

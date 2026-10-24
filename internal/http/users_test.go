@@ -45,9 +45,13 @@ func (f *fakeUsers) GetUserByEmail(_ context.Context, email string) (store.User,
 	return u, nil
 }
 
-func newUsersTestServer(users UserStore) nethttp.Handler {
+func newUsersTestServer(users *fakeUsers) nethttp.Handler {
+	return newSessionsServer(users, newFakeSessions(users), Options{})
+}
+
+func newSessionsServer(users *fakeUsers, sessions *fakeSessions, opts Options) nethttp.Handler {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewServer(log, fakeDB{}, users).Handler()
+	return NewServer(log, fakeDB{}, users, sessions, opts).Handler()
 }
 
 func post(h nethttp.Handler, path, body string) *httptest.ResponseRecorder {
