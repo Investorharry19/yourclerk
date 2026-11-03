@@ -19,16 +19,15 @@ import (
 	"time"
 )
 
-// DefaultAudience matches the audience the server puts in tokens until
-// per-application audiences arrive.
-const DefaultAudience = "yourclerk"
-
 // Config configures a Client. Only Issuer is required.
 type Config struct {
-	// Issuer is the base URL of the yourclerk service, for example
-	// "https://auth.example.com". Tokens whose "iss" differs are rejected.
+	// Issuer is your application's issuer URL, shown as "issuer" in the dashboard
+	// and the API: "<service base URL>/apps/<application id>", for example
+	// "https://auth.example.com/apps/0f6c1d2e-7a3b-4c5d-8e9f-a1b2c3d4e5f6".
+	// Tokens whose "iss" differs are rejected, so tokens of other applications fail.
 	Issuer string
-	// Audience is the expected "aud". Defaults to DefaultAudience.
+	// Audience is the expected "aud", which is the application id. It is taken
+	// from the Issuer URL when that ends in /apps/<id>; set it only for other shapes.
 	Audience string
 	// JWKSURL overrides where keys are fetched from. Defaults to
 	// Issuer + "/.well-known/jwks.json".
@@ -92,7 +91,12 @@ func New(cfg Config) (*Client, error) {
 		onError:  cfg.OnError,
 	}
 	if c.audience == "" {
-		c.audience = DefaultAudience
+		// ".../apps/<application id>": the id is the audience.
+		segs := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(segs) < 2 || segs[len(segs)-2] != "apps" || segs[len(segs)-1] == "" {
+			return nil, fmt.Errorf("yourclerk: Config.Audience is required unless Config.Issuer ends in /apps/<application id> (got %q)", cfg.Issuer)
+		}
+		c.audience = segs[len(segs)-1]
 	}
 	if c.jwksURL == "" {
 		c.jwksURL = issuer + "/.well-known/jwks.json"

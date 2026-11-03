@@ -1,7 +1,7 @@
 package http
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	nethttp "net/http"
 	"time"
@@ -9,14 +9,8 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Investorharry19/yourclerk/internal/auth"
+	"github.com/Investorharry19/yourclerk/internal/store"
 )
-
-// TokenIssuer mints access tokens and publishes the keys that verify them.
-// *auth.TokenService satisfies it.
-type TokenIssuer interface {
-	Issue(ctx context.Context, userID, sessionID string, now time.Time) (token string, expiresAt time.Time, err error)
-	JWKS(ctx context.Context, now time.Time) (auth.JWKS, error)
-}
 
 // jwksCacheControl lets verifiers cache the JWKS for auth.JWKSCacheMaxAge.
 // Rotation is safe with caching because a new key is published
@@ -24,13 +18,23 @@ type TokenIssuer interface {
 var jwksCacheControl = fmt.Sprintf("public, max-age=%d", int(auth.JWKSCacheMaxAge.Seconds()))
 
 func (s *Server) handleJWKS(w nethttp.ResponseWriter, r *nethttp.Request) {
-	if s.opts.Tokens == nil {
+	if s.tokens == nil {
 		WriteError(w, nethttp.StatusServiceUnavailable, "unavailable", "Token service is not configured")
 		return
 	}
-	jwks, err := s.opts.Tokens.JWKS(r.Context(), s.opts.Now())
+	app, err := s.registry.ApplicationByID(r.Context(), chi.URLParam(r, "app_id"))
+	if errors.Is(err, store.ErrNotFound) {
+		WriteError(w, nethttp.StatusNotFound, "not_found", "Application not found")
+		return
+	}
 	if err != nil {
-		s.log.Error("jwks", "err", err)
+		s.log.Error("jwks: load application", "err", err)
+		WriteError(w, nethttp.StatusInternalServerError, "internal_error", "Something went wrong")
+		return
+	}
+	jwks, err := s.tokens.JWKS(r.Context(), app.ID, s.opts.Now())
+	if err != nil {
+		s.log.Error("jwks", "err", err, "application_id", app.ID)
 		WriteError(w, nethttp.StatusInternalServerError, "internal_error", "Something went wrong")
 		return
 	}
@@ -51,10 +55,11 @@ type tokenResponse struct {
 // Only the current session can mint tokens: any other id is a 404, whether it
 // belongs to someone else, to the caller's other device, or to nobody.
 func (s *Server) handleIssueToken(w nethttp.ResponseWriter, r *nethttp.Request) {
-	if s.opts.Tokens == nil {
+	if s.tokens == nil {
 		WriteError(w, nethttp.StatusServiceUnavailable, "unavailable", "Token service is not configured")
 		return
 	}
+	app, _ := ApplicationFromContext(r.Context())
 	user, _ := UserFromContext(r.Context())
 	current, _ := SessionFromContext(r.Context())
 	if chi.URLParam(r, "id") != current.ID {
@@ -63,7 +68,7 @@ func (s *Server) handleIssueToken(w nethttp.ResponseWriter, r *nethttp.Request) 
 	}
 
 	now := s.opts.Now()
-	token, exp, err := s.opts.Tokens.Issue(r.Context(), user.ID, current.ID, now)
+	token, exp, err := s.tokens.Issue(r.Context(), app.ID, user.ID, current.ID, now)
 	if err != nil {
 		s.log.Error("issue token", "err", err, "session_id", current.ID)
 		WriteError(w, nethttp.StatusInternalServerError, "internal_error", "Something went wrong")

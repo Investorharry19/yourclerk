@@ -1,7 +1,6 @@
 package http
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	nethttp "net/http"
@@ -19,13 +18,6 @@ const (
 	maxEmailLen    = 254
 	maxBodyBytes   = 1 << 20
 )
-
-// UserStore is the slice of the database the auth handlers need.
-// *store.Store satisfies it; tests use an in-memory fake.
-type UserStore interface {
-	CreateUser(ctx context.Context, email, passwordHash string) (store.User, error)
-	GetUserByEmail(ctx context.Context, email string) (store.User, error)
-}
 
 type credentials struct {
 	Email    string `json:"email"`
@@ -82,6 +74,11 @@ func validatePassword(p string) string {
 }
 
 func (s *Server) handleSignup(w nethttp.ResponseWriter, r *nethttp.Request) {
+	app, _ := ApplicationFromContext(r.Context())
+	if !app.Settings.SignupEnabled {
+		WriteError(w, nethttp.StatusForbidden, "signup_disabled", "Sign-up is disabled for this application")
+		return
+	}
 	var in credentials
 	if !decodeJSON(w, r, &in) {
 		return
@@ -104,7 +101,7 @@ func (s *Server) handleSignup(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 
-	user, err := s.users.CreateUser(r.Context(), email, hash)
+	user, err := s.tenant(r).CreateUser(r.Context(), email, hash)
 	switch {
 	case errors.Is(err, store.ErrEmailTaken):
 		// Signup necessarily reveals that an email is registered. Stage 5
@@ -131,7 +128,7 @@ func (s *Server) handleLogin(w nethttp.ResponseWriter, r *nethttp.Request) {
 		found bool
 	)
 	if email, ok := normalizeEmail(in.Email); ok {
-		u, err := s.users.GetUserByEmail(r.Context(), email)
+		u, err := s.tenant(r).GetUserByEmail(r.Context(), email)
 		switch {
 		case err == nil:
 			user, found = u, true

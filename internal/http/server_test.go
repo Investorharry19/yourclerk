@@ -1,7 +1,6 @@
 package http
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,13 +10,9 @@ import (
 	"testing"
 )
 
-type fakeDB struct{ err error }
-
-func (f fakeDB) Ping(context.Context) error { return f.err }
-
 func newTestServer(db Pinger) nethttp.Handler {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewServer(log, db, nil, nil, Options{}).Handler()
+	return NewServer(Deps{Log: log, DB: db}).Handler()
 }
 
 func TestHealthz(t *testing.T) {

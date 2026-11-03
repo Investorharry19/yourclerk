@@ -48,22 +48,21 @@ func run() error {
 	}
 	defer db.Close()
 
-	tokens, err := auth.NewTokenService(db, cfg.SecretKey, cfg.Issuer, auth.DefaultAudience, auth.DefaultTokenTTL)
+	// Signing keys are per application: created when an application is created
+	// (or on its first token, for applications adopted by the Stage 4 migration).
+	tokens, err := auth.NewTokenService(db, cfg.SecretKey, cfg.Issuer, auth.DefaultTokenTTL)
 	if err != nil {
 		return fmt.Errorf("token service: %w", err)
-	}
-	if err := tokens.EnsureKey(ctx, time.Now()); err != nil {
-		return fmt.Errorf("ensure signing key: %w", err)
 	}
 
 	go cleanupSessions(ctx, log, db, time.Hour)
 
 	srv := &nethttp.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),
-		Handler: apphttp.NewServer(log, db, db, db, apphttp.Options{
-			CookieSecure: cfg.CookieSecure,
-			Tokens:       tokens,
-			EnableDocs:   cfg.EnableDocs,
+		Handler: apphttp.NewServer(apphttp.Deps{
+			Log: log, DB: db,
+			Registry: db, Developers: db, Apps: db, Tenants: db, Tokens: tokens,
+			Options: apphttp.Options{CookieSecure: cfg.CookieSecure, EnableDocs: cfg.EnableDocs},
 		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,

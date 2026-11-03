@@ -8,13 +8,12 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	// DefaultAudience is the "aud" claim until Stage 4 makes it per-application.
-	DefaultAudience = "yourclerk"
 	// DefaultTokenTTL is the lifetime of an access token.
 	DefaultTokenTTL = 60 * time.Second
 	// KeyGrace is how long a retired key stays in the JWKS. It must be longer
@@ -61,50 +60,67 @@ func JWKFromPublicKey(kid string, pub *ecdsa.PublicKey) JWK {
 }
 
 // TokenService issues short-lived access tokens and publishes the public keys
-// that verify them. Private keys live encrypted in the KeyStore.
+// that verify them, separately for every application:
+//
+//   - each application has its own signing keys, so a leaked or rotated key
+//     affects one tenant only;
+//   - each application has its own issuer URL, "<base>/apps/<application id>",
+//     whose JWKS lives at "<issuer>/.well-known/jwks.json";
+//   - the audience is the application id.
+//
+// So a token from application A fails verification against application B three
+// times over: wrong issuer, wrong audience and a key B does not publish.
 type TokenService struct {
-	keys     KeyStore
-	encKey   []byte
-	issuer   string
-	audience string
-	ttl      time.Duration
+	keys       KeyStoreProvider
+	encKey     []byte
+	baseIssuer string
+	ttl        time.Duration
 
 	mu    sync.Mutex
-	privs map[string]*ecdsa.PrivateKey // decrypted keys by kid
+	privs map[string]*ecdsa.PrivateKey // decrypted keys by "<application id>/<kid>"
 }
 
 // NewTokenService validates its inputs. secret encrypts private keys at rest
-// and must be at least 32 characters.
-func NewTokenService(keys KeyStore, secret, issuer, audience string, ttl time.Duration) (*TokenService, error) {
+// and must be at least 32 characters. baseIssuer is the public URL of this
+// service, for example "https://auth.example.com".
+func NewTokenService(keys KeyStoreProvider, secret, baseIssuer string, ttl time.Duration) (*TokenService, error) {
 	if len(secret) < minSecretLen {
 		return nil, fmt.Errorf("SECRET_KEY must be at least %d characters", minSecretLen)
 	}
-	if issuer == "" {
+	baseIssuer = strings.TrimRight(baseIssuer, "/")
+	if baseIssuer == "" {
 		return nil, errors.New("issuer is required")
-	}
-	if audience == "" {
-		audience = DefaultAudience
 	}
 	if ttl <= 0 {
 		ttl = DefaultTokenTTL
 	}
 	return &TokenService{
-		keys:     keys,
-		encKey:   deriveEncryptionKey(secret),
-		issuer:   issuer,
-		audience: audience,
-		ttl:      ttl,
-		privs:    map[string]*ecdsa.PrivateKey{},
+		keys:       keys,
+		encKey:     deriveEncryptionKey(secret),
+		baseIssuer: baseIssuer,
+		ttl:        ttl,
+		privs:      map[string]*ecdsa.PrivateKey{},
 	}, nil
 }
 
-func (t *TokenService) Issuer() string   { return t.issuer }
-func (t *TokenService) Audience() string { return t.audience }
-func (t *TokenService) TTL() time.Duration {
-	return t.ttl
+// Issuer is the "iss" claim, and the base URL verifiers are configured with, for an application.
+func (t *TokenService) Issuer(appID string) string { return t.baseIssuer + "/apps/" + appID }
+
+// JWKSURL is where verifiers fetch an application's public keys.
+func (t *TokenService) JWKSURL(appID string) string {
+	return t.Issuer(appID) + "/.well-known/jwks.json"
 }
 
-func (t *TokenService) newKeyRecord(now, activeFrom time.Time) (SigningKey, error) {
+// Audience is the "aud" claim for an application: its id.
+func (t *TokenService) Audience(appID string) string { return appID }
+
+func (t *TokenService) TTL() time.Duration { return t.ttl }
+
+// keyAAD binds an encrypted private key to its application and kid, so the
+// blob cannot be copied onto another application's row and still decrypt.
+func keyAAD(appID, kid string) []byte { return []byte(appID + ":" + kid) }
+
+func (t *TokenService) newKeyRecord(appID string, now, activeFrom time.Time) (SigningKey, error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return SigningKey{}, fmt.Errorf("generate key: %w", err)
@@ -123,7 +139,7 @@ func (t *TokenService) newKeyRecord(now, activeFrom time.Time) (SigningKey, erro
 	if err != nil {
 		return SigningKey{}, err
 	}
-	sealed, err := seal(t.encKey, privDER, []byte(kid))
+	sealed, err := seal(t.encKey, privDER, keyAAD(appID, kid))
 	if err != nil {
 		return SigningKey{}, err
 	}
@@ -137,60 +153,65 @@ func (t *TokenService) newKeyRecord(now, activeFrom time.Time) (SigningKey, erro
 	}, nil
 }
 
-// EnsureKey creates the first signing key if none is active. Safe to call at startup.
-func (t *TokenService) EnsureKey(ctx context.Context, now time.Time) error {
-	_, err := t.keys.ActiveSigningKey(ctx, now)
+// EnsureKey creates an application's first signing key if it has none that can
+// sign now. Safe to call repeatedly.
+func (t *TokenService) EnsureKey(ctx context.Context, appID string, now time.Time) error {
+	store := t.keys.KeysFor(appID)
+	_, err := store.ActiveSigningKey(ctx, now)
 	if err == nil {
 		return nil
 	}
 	if !errors.Is(err, ErrNoSigningKey) {
 		return err
 	}
-	rec, err := t.newKeyRecord(now, now) // the very first key signs immediately
+	rec, err := t.newKeyRecord(appID, now, now) // the very first key signs immediately
 	if err != nil {
 		return err
 	}
-	return t.keys.CreateSigningKey(ctx, rec)
+	return store.CreateSigningKey(ctx, rec)
 }
 
-// Rotate publishes a new signing key now and makes it the signing key after
-// delay (use KeyActivationDelay). Until then the current key keeps signing, so
-// every verifier gets to cache the new key before a token that needs it exists.
-// The old key retires when the new one activates and then stays in the JWKS for
-// KeyGrace, so tokens signed just before the switch keep verifying.
-func (t *TokenService) Rotate(ctx context.Context, now time.Time, delay time.Duration) (kid string, activeFrom time.Time, err error) {
+// Rotate publishes a new signing key for an application now and makes it the
+// signing key after delay (use KeyActivationDelay). Until then the current key
+// keeps signing, so every verifier gets to cache the new key before a token
+// that needs it exists. The old key retires when the new one activates and then
+// stays in the JWKS for KeyGrace, so tokens signed just before the switch keep
+// verifying.
+func (t *TokenService) Rotate(ctx context.Context, appID string, now time.Time, delay time.Duration) (kid string, activeFrom time.Time, err error) {
 	if delay < 0 {
 		return "", time.Time{}, errors.New("rotate: delay must not be negative")
 	}
 	activeFrom = now.Add(delay)
-	rec, err := t.newKeyRecord(now, activeFrom)
+	rec, err := t.newKeyRecord(appID, now, activeFrom)
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	if err := t.keys.RotateSigningKey(ctx, rec); err != nil {
+	if err := t.keys.KeysFor(appID).RotateSigningKey(ctx, rec); err != nil {
 		return "", time.Time{}, err
 	}
 	return rec.KID, activeFrom, nil
 }
 
-func (t *TokenService) activePrivateKey(ctx context.Context, now time.Time) (string, *ecdsa.PrivateKey, error) {
-	rec, err := t.keys.ActiveSigningKey(ctx, now)
+func (t *TokenService) activePrivateKey(ctx context.Context, appID string, now time.Time) (string, *ecdsa.PrivateKey, error) {
+	store := t.keys.KeysFor(appID)
+	rec, err := store.ActiveSigningKey(ctx, now)
 	if errors.Is(err, ErrNoSigningKey) {
-		if err := t.EnsureKey(ctx, now); err != nil {
+		if err := t.EnsureKey(ctx, appID, now); err != nil {
 			return "", nil, err
 		}
-		rec, err = t.keys.ActiveSigningKey(ctx, now)
+		rec, err = store.ActiveSigningKey(ctx, now)
 	}
 	if err != nil {
 		return "", nil, err
 	}
 
+	cacheKey := appID + "/" + rec.KID
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if k, ok := t.privs[rec.KID]; ok {
+	if k, ok := t.privs[cacheKey]; ok {
 		return rec.KID, k, nil
 	}
-	der, err := open(t.encKey, rec.PrivateKeyEncrypted, []byte(rec.KID))
+	der, err := open(t.encKey, rec.PrivateKeyEncrypted, keyAAD(appID, rec.KID))
 	if err != nil {
 		return "", nil, fmt.Errorf("decrypt signing key %s (was SECRET_KEY changed?): %w", rec.KID, err)
 	}
@@ -202,13 +223,14 @@ func (t *TokenService) activePrivateKey(ctx context.Context, now time.Time) (str
 	if !ok {
 		return "", nil, fmt.Errorf("signing key %s is not an ECDSA key", rec.KID)
 	}
-	t.privs[rec.KID] = priv
+	t.privs[cacheKey] = priv
 	return rec.KID, priv, nil
 }
 
-// Issue mints an access token for a user's session and returns its expiry.
-func (t *TokenService) Issue(ctx context.Context, userID, sessionID string, now time.Time) (string, time.Time, error) {
-	kid, priv, err := t.activePrivateKey(ctx, now)
+// Issue mints an access token for a user's session in an application and
+// returns its expiry.
+func (t *TokenService) Issue(ctx context.Context, appID, userID, sessionID string, now time.Time) (string, time.Time, error) {
+	kid, priv, err := t.activePrivateKey(ctx, appID, now)
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -219,9 +241,9 @@ func (t *TokenService) Issue(ctx context.Context, userID, sessionID string, now 
 
 	exp := now.Add(t.ttl)
 	token, err := SignES256(kid, priv, Claims{
-		Issuer:    t.issuer,
+		Issuer:    t.Issuer(appID),
 		Subject:   userID,
-		Audience:  Audience{t.audience},
+		Audience:  Audience{t.Audience(appID)},
 		ExpiresAt: NewNumericDate(exp),
 		NotBefore: NewNumericDate(now),
 		IssuedAt:  NewNumericDate(now),
@@ -234,9 +256,9 @@ func (t *TokenService) Issue(ctx context.Context, userID, sessionID string, now 
 	return token, exp, nil
 }
 
-// JWKS returns the public keys verifiers should trust, newest first.
-func (t *TokenService) JWKS(ctx context.Context, now time.Time) (JWKS, error) {
-	recs, err := t.keys.PublishedSigningKeys(ctx, now.Add(-KeyGrace))
+// JWKS returns the public keys verifiers should trust for an application, newest first.
+func (t *TokenService) JWKS(ctx context.Context, appID string, now time.Time) (JWKS, error) {
+	recs, err := t.keys.KeysFor(appID).PublishedSigningKeys(ctx, now.Add(-KeyGrace))
 	if err != nil {
 		return JWKS{}, err
 	}
@@ -263,11 +285,11 @@ func parsePublicKey(der []byte) (*ecdsa.PublicKey, error) {
 	return pub, nil
 }
 
-// Verify checks a token this service issued, using its own published keys.
-// It is for the server's own use (tests now, pending-MFA tokens in Stage 7);
-// customer backends use the SDK instead.
-func (t *TokenService) Verify(ctx context.Context, token string, now time.Time) (*Claims, error) {
-	recs, err := t.keys.PublishedSigningKeys(ctx, now.Add(-KeyGrace))
+// Verify checks a token against one application: its keys, its issuer and its
+// audience. It is for the server's own use (tests now, pending-MFA tokens in
+// Stage 7); customer backends use the SDK instead.
+func (t *TokenService) Verify(ctx context.Context, appID, token string, now time.Time) (*Claims, error) {
+	recs, err := t.keys.KeysFor(appID).PublishedSigningKeys(ctx, now.Add(-KeyGrace))
 	if err != nil {
 		return nil, err
 	}
@@ -279,5 +301,5 @@ func (t *TokenService) Verify(ctx context.Context, token string, now time.Time) 
 		}
 		return nil, ErrUnknownKey
 	}
-	return Verify(token, keyFunc, VerifyOptions{Issuer: t.issuer, Audience: t.audience, Now: now})
+	return Verify(token, keyFunc, VerifyOptions{Issuer: t.Issuer(appID), Audience: t.Audience(appID), Now: now})
 }

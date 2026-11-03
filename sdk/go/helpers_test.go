@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	testAudience = "yourclerk"
+	testAudience = "0f6c1d2e-7a3b-4c5d-8e9f-a1b2c3d4e5f6" // the application id
 	testSubject  = "user-1"
 )
 
@@ -64,7 +64,7 @@ func newFakeIssuer(t *testing.T, clk *clock) *fakeIssuer {
 	t.Helper()
 	f := &fakeIssuer{t: t, clk: clk}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/apps/"+testAudience+"/.well-known/jwks.json", func(w http.ResponseWriter, r *http.Request) {
 		f.fetches.Add(1)
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -86,7 +86,8 @@ func newFakeIssuer(t *testing.T, clk *clock) *fakeIssuer {
 	return f
 }
 
-func (f *fakeIssuer) URL() string { return f.srv.URL }
+// URL is the application issuer, "<base>/apps/<application id>".
+func (f *fakeIssuer) URL() string { return f.srv.URL + "/apps/" + testAudience }
 
 func (f *fakeIssuer) newKey(kid string) testKey {
 	f.t.Helper()

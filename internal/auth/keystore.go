@@ -40,7 +40,32 @@ type KeyStore interface {
 	RotateSigningKey(ctx context.Context, k SigningKey) error
 }
 
-// MemoryKeyStore is an in-memory KeyStore for tests and experiments.
+// KeyStoreProvider hands out the key store for one application. Every
+// application has its own signing keys, so there is no way to ask for "the" key store.
+type KeyStoreProvider interface {
+	KeysFor(appID string) KeyStore
+}
+
+// MemoryKeyStores is an in-memory KeyStoreProvider for tests.
+type MemoryKeyStores struct {
+	mu    sync.Mutex
+	byApp map[string]*MemoryKeyStore
+}
+
+func NewMemoryKeyStores() *MemoryKeyStores {
+	return &MemoryKeyStores{byApp: map[string]*MemoryKeyStore{}}
+}
+
+func (m *MemoryKeyStores) KeysFor(appID string) KeyStore {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.byApp[appID] == nil {
+		m.byApp[appID] = NewMemoryKeyStore()
+	}
+	return m.byApp[appID]
+}
+
+// MemoryKeyStore is an in-memory KeyStore for one application, for tests.
 type MemoryKeyStore struct {
 	mu   sync.Mutex
 	keys []SigningKey // oldest first

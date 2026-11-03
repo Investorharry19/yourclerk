@@ -14,9 +14,8 @@ import (
 )
 
 func docsServer(enable bool) nethttp.Handler {
-	users := newFakeUsers()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewServer(log, fakeDB{}, users, newFakeSessions(users), Options{EnableDocs: enable}).Handler()
+	return NewServer(Deps{Log: log, DB: fakeDB{}, Options: Options{EnableDocs: enable}}).Handler()
 }
 
 func TestDocsServed(t *testing.T) {

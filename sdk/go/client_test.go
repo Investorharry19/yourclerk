@@ -360,17 +360,31 @@ func TestEmptyJWKSDoesNotWipeCache(t *testing.T) {
 }
 
 func TestNewValidatesConfig(t *testing.T) {
-	for _, issuer := range []string{"", "not a url", "ftp://auth.example.com", "https://"} {
-		if _, err := New(Config{Issuer: issuer}); err == nil {
+	for _, issuer := range []string{"", "not a url", "ftp://auth.example.com/apps/x", "https://"} {
+		if _, err := New(Config{Issuer: issuer, Audience: "x"}); err == nil {
 			t.Errorf("New accepted issuer %q", issuer)
 		}
 	}
-	c, err := New(Config{Issuer: "https://auth.example.com/"})
+	// The audience is the application id, taken from the issuer URL.
+	c, err := New(Config{Issuer: "https://auth.example.com/apps/app-123/"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.issuer != "https://auth.example.com" || c.jwksURL != "https://auth.example.com/.well-known/jwks.json" || c.audience != DefaultAudience {
+	if c.issuer != "https://auth.example.com/apps/app-123" ||
+		c.jwksURL != "https://auth.example.com/apps/app-123/.well-known/jwks.json" || c.audience != "app-123" {
 		t.Fatalf("defaults wrong: %+v", c)
+	}
+	// An explicit audience wins, and lets other issuer shapes work.
+	c, err = New(Config{Issuer: "https://auth.example.com", Audience: "custom"})
+	if err != nil || c.audience != "custom" {
+		t.Fatalf("explicit audience: %v %+v", err, c)
+	}
+	// Without an /apps/<id> issuer and without an audience there is nothing to check
+	// tokens against, so refuse rather than guess.
+	for _, issuer := range []string{"https://auth.example.com", "https://auth.example.com/apps", "https://auth.example.com/apps/", "https://auth.example.com/other/app-123"} {
+		if _, err := New(Config{Issuer: issuer}); err == nil {
+			t.Errorf("New accepted issuer %q with no audience", issuer)
+		}
 	}
 }
 

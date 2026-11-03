@@ -3,7 +3,9 @@
 Verify yourclerk access tokens in your own Go backend. Standard library only.
 
 ```go
-clerk, err := yourclerk.New(yourclerk.Config{Issuer: "https://auth.example.com"})
+// Issuer is your application's issuer URL from the dashboard / API:
+// "<service base URL>/apps/<application id>". Its id doubles as the token audience.
+clerk, err := yourclerk.New(yourclerk.Config{Issuer: "https://auth.example.com/apps/0f6c1d2e-7a3b-4c5d-8e9f-a1b2c3d4e5f6"})
 if err != nil { log.Fatal(err) }
 
 mux := http.NewServeMux()
@@ -20,7 +22,9 @@ Or verify by hand: `claims, err := clerk.VerifyToken(ctx, token)` and test the e
 
 - Tokens are ES256 JWTs that live 60 seconds. Your frontend gets one from
   `POST /v1/sessions/{id}/token` and sends it as `Authorization: Bearer <token>`.
-- The client downloads the issuer's public keys from `/.well-known/jwks.json`, caches them
+- **Each application has its own keys, issuer and audience.** A token minted for another application
+  fails here three ways over: wrong issuer, wrong audience, and a signing key your JWKS does not list.
+- The client downloads the issuer's public keys from `<issuer>/.well-known/jwks.json`, caches them
   (5 minutes by default) and checks every signature locally. **No shared secret, and no call
   to yourclerk on the request path.**
 - It checks signature, `exp`, `nbf`, `iss` and `aud`. The algorithm in the token header is never

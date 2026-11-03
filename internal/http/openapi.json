@@ -2,175 +2,1284 @@
   "openapi": "3.0.3",
   "info": {
     "title": "yourclerk API",
-    "version": "0.3.0",
-    "description": "Hosted identity service built stage by stage.\n\n**How to test in this page**\n1. `POST /v1/signup` with an email and a password of at least 8 characters.\n2. `POST /v1/login` with the same credentials. The server sets an `HttpOnly` cookie named `session`, and your browser sends it automatically on every later request from this page.\n3. Try `GET /v1/me`, `GET /v1/sessions`, `POST /v1/logout`.\n4. `POST /v1/sessions/{id}/token` (use the session `id` from `/v1/me`) returns a 60-second JWT. Paste it into https://jwt.io or verify it with the Go SDK in `sdk/go`.\n\nThe cookie is not visible to JavaScript or to the Authorize dialog; that is intentional. To act as a different user, call `POST /v1/logout` and log in again. This page only works on the same origin as the API, and the `Secure` cookie flag is off only when `APP_ENV=development`."
+    "version": "0.4.0",
+    "description": "Hosted identity service built stage by stage. Since Stage 4 it is **multi-tenant**: every end user belongs to an *application*, and each application has its own users, sessions, signing keys, issuer and settings.\n\n**Three kinds of caller, three credentials** (use the green *Authorize* button for the first two):\n\n| Who | Credential | Endpoints |\n|---|---|---|\n| A developer in the dashboard | `Authorization: Bearer dvt_...` (from `POST /v1/platform/login`) | `/v1/platform/...` |\n| A developer's backend | `Authorization: Bearer sk_live_...` (secret key) | `/v1/backend/...` |\n| An application's end users | `X-Publishable-Key: pk_live_...` header + a session cookie | `/v1/signup`, `/v1/login`, `/v1/me`, ... |\n\n**Quick start in this page**\n1. `POST /v1/platform/signup`, then `POST /v1/platform/login`. Copy the `token`, click *Authorize* and paste it under **developerToken**.\n2. `POST /v1/platform/applications` with a name. The response shows the **secret key once**; copy it. Note the `publishable_key` and `issuer`.\n3. Click *Authorize* again and paste the publishable key under **publishableKey** and the secret key under **secretKey**.\n4. As an end user: `POST /v1/signup` and `POST /v1/login`. The server sets an `HttpOnly` cookie named `session_<part of the publishable key>`, which your browser sends by itself. Then try `GET /v1/me`, `GET /v1/sessions` and `POST /v1/sessions/{id}/token`.\n5. As the developer's backend: `GET /v1/backend/users` lists that application's users.\n\n**Try the isolation**: create a second application, sign up the same email there with another password, and switch the publishable key. Each application sees only its own users. A token minted by one application fails verification against the other (different issuer, audience and keys), and a publishable key is refused on every secret-key endpoint.\n\nThis page only works on the same origin as the API, and the `Secure` cookie flag is off only when `APP_ENV=development`."
   },
-  "servers": [{ "url": "/" }],
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
   "tags": [
-    { "name": "Health" },
-    { "name": "Accounts", "description": "Sign up and log in with email and password." },
-    { "name": "Sessions", "description": "Cookie sessions: who am I, which devices, sign out." },
-    { "name": "Tokens", "description": "Short-lived JWTs and the public keys that verify them." }
+    {
+      "name": "Health"
+    },
+    {
+      "name": "Accounts",
+      "description": "End users sign up and log in with email and password. Needs a publishable key."
+    },
+    {
+      "name": "Sessions",
+      "description": "Cookie sessions: who am I, which devices, sign out. Needs a publishable key and the session cookie."
+    },
+    {
+      "name": "Tokens",
+      "description": "Short-lived JWTs and the per-application public keys that verify them."
+    },
+    {
+      "name": "Backend",
+      "description": "Server-to-server API for a developer's own backend. Needs the application's secret key."
+    },
+    {
+      "name": "Platform: account",
+      "description": "Developer sign-up and sign-in for the dashboard."
+    },
+    {
+      "name": "Platform: applications",
+      "description": "Create and configure applications, roll secret keys, rotate signing keys."
+    }
   ],
   "paths": {
     "/healthz": {
       "get": {
-        "tags": ["Health"],
+        "tags": [
+          "Health"
+        ],
         "summary": "Liveness and database check",
         "operationId": "healthz",
         "responses": {
           "200": {
             "description": "Server and database are up",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" }, "example": { "status": "ok", "database": "up" } } }
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                },
+                "example": {
+                  "status": "ok",
+                  "database": "up"
+                }
+              }
+            }
           },
           "503": {
             "description": "Database unreachable",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" }, "example": { "status": "unavailable", "database": "down" } } }
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                },
+                "example": {
+                  "status": "unavailable",
+                  "database": "down"
+                }
+              }
+            }
           }
-        }
-      }
-    },
-    "/.well-known/jwks.json": {
-      "get": {
-        "tags": ["Tokens"],
-        "summary": "Public signing keys (JWKS)",
-        "description": "Verifiers fetch this once, cache it, and check token signatures locally. A rotated-in key is listed 10 minutes before it signs anything, and a retired key stays listed for 24 hours, so no token ever needs a key you have not had the chance to cache. Responses are cacheable for 5 minutes.",
-        "operationId": "jwks",
-        "responses": {
-          "200": {
-            "description": "JSON Web Key Set (RFC 7517)",
-            "headers": { "Cache-Control": { "schema": { "type": "string" }, "example": "public, max-age=300" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JWKS" } } }
-          },
-          "503": { "$ref": "#/components/responses/Error" }
         }
       }
     },
     "/v1/signup": {
       "post": {
-        "tags": ["Accounts"],
+        "tags": [
+          "Accounts"
+        ],
         "summary": "Create an account",
-        "description": "The email is trimmed and lower-cased, so `Alice@Example.com` and `alice@example.com` are the same account. Passwords must be 8 to 128 characters and are stored only as Argon2id hashes.",
+        "description": "Creates a user **in the application the publishable key belongs to**. The email is trimmed and lower-cased and is unique per application, so the same address can exist in two applications with different passwords. Passwords must be 8 to 128 characters and are stored only as Argon2id hashes.",
         "operationId": "signup",
         "requestBody": {
           "required": true,
-          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Credentials" }, "example": { "email": "alice@example.com", "password": "correct horse battery" } } }
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Credentials"
+              },
+              "example": {
+                "email": "alice@example.com",
+                "password": "correct horse battery"
+              }
+            }
+          }
         },
         "responses": {
-          "201": { "description": "Account created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } },
-          "400": { "$ref": "#/components/responses/InvalidJSON" },
-          "409": { "description": "Email already registered", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": { "code": "email_taken", "message": "An account with this email already exists" } } } } },
-          "422": { "description": "Invalid email or password", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": { "code": "validation_error", "message": "Password must be at least 8 characters" } } } } }
-        }
+          "201": {
+            "description": "Account created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidJSON"
+          },
+          "409": {
+            "description": "Email already registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "email_taken",
+                    "message": "An account with this email already exists"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid email or password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "validation_error",
+                    "message": "Password must be at least 8 characters"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/unknown publishable key, or (login) invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "invalid_publishable_key": {
+                    "value": {
+                      "error": {
+                        "code": "invalid_publishable_key",
+                        "message": "A valid publishable key is required in the X-Publishable-Key header"
+                      }
+                    }
+                  },
+                  "invalid_credentials": {
+                    "value": {
+                      "error": {
+                        "code": "invalid_credentials",
+                        "message": "Invalid email or password"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Sign-up is disabled for this application",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "signup_disabled",
+                    "message": "Sign-up is disabled for this application"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ]
       }
     },
     "/v1/login": {
       "post": {
-        "tags": ["Accounts"],
+        "tags": [
+          "Accounts"
+        ],
         "summary": "Log in and start a session",
-        "description": "On success the response sets the `session` cookie (`HttpOnly`, `SameSite=Lax`, `Secure` unless in development). An unknown email and a wrong password return the identical 401 and take the same time.",
+        "description": "Checks the credentials against this application's users only and sets the session cookie `session_<part of the publishable key>`. Unknown email and wrong password give the same 401.",
         "operationId": "login",
         "requestBody": {
           "required": true,
-          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Credentials" }, "example": { "email": "alice@example.com", "password": "correct horse battery" } } }
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Credentials"
+              },
+              "example": {
+                "email": "alice@example.com",
+                "password": "correct horse battery"
+              }
+            }
+          }
         },
         "responses": {
           "200": {
             "description": "Logged in",
-            "headers": { "Set-Cookie": { "schema": { "type": "string" }, "description": "session=<token>; HttpOnly; SameSite=Lax; Path=/" } },
-            "content": { "application/json": { "schema": { "type": "object", "properties": { "user": { "$ref": "#/components/schemas/User" } } } } }
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "session=<token>; HttpOnly; SameSite=Lax; Path=/"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  }
+                }
+              }
+            }
           },
-          "400": { "$ref": "#/components/responses/InvalidJSON" },
-          "401": { "description": "Invalid email or password", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": { "code": "invalid_credentials", "message": "Invalid email or password" } } } } }
-        }
+          "400": {
+            "$ref": "#/components/responses/InvalidJSON"
+          },
+          "401": {
+            "description": "Missing/unknown publishable key, or (login) invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "invalid_publishable_key": {
+                    "value": {
+                      "error": {
+                        "code": "invalid_publishable_key",
+                        "message": "A valid publishable key is required in the X-Publishable-Key header"
+                      }
+                    }
+                  },
+                  "invalid_credentials": {
+                    "value": {
+                      "error": {
+                        "code": "invalid_credentials",
+                        "message": "Invalid email or password"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ]
       }
     },
     "/v1/me": {
       "get": {
-        "tags": ["Sessions"],
+        "tags": [
+          "Sessions"
+        ],
         "summary": "The signed-in user and current session",
         "operationId": "me",
-        "security": [{ "cookieAuth": [] }],
+        "security": [
+          {
+            "publishableKey": [],
+            "cookieAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Current user",
-            "content": { "application/json": { "schema": { "type": "object", "properties": { "user": { "$ref": "#/components/schemas/User" }, "session": { "type": "object", "properties": { "id": { "type": "string", "format": "uuid" } } } } } } }
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "$ref": "#/components/schemas/User"
+                    },
+                    "session": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" }
+          "401": {
+            "description": "Missing/unknown publishable key, or missing, unknown, revoked or expired session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "invalid_publishable_key": {
+                    "value": {
+                      "error": {
+                        "code": "invalid_publishable_key",
+                        "message": "A valid publishable key is required in the X-Publishable-Key header"
+                      }
+                    }
+                  },
+                  "unauthorized": {
+                    "value": {
+                      "error": {
+                        "code": "unauthorized",
+                        "message": "Authentication required"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },
     "/v1/logout": {
       "post": {
-        "tags": ["Sessions"],
+        "tags": [
+          "Sessions"
+        ],
         "summary": "Sign out this device",
         "description": "Revokes the current session and clears the cookie. A copy of the old cookie stops working immediately.",
         "operationId": "logout",
-        "security": [{ "cookieAuth": [] }],
+        "security": [
+          {
+            "publishableKey": [],
+            "cookieAuth": []
+          }
+        ],
         "responses": {
-          "204": { "description": "Signed out" },
-          "401": { "$ref": "#/components/responses/Unauthorized" }
+          "204": {
+            "description": "Signed out"
+          },
+          "401": {
+            "description": "Missing/unknown publishable key, or missing, unknown, revoked or expired session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "invalid_publishable_key": {
+                    "value": {
+                      "error": {
+                        "code": "invalid_publishable_key",
+                        "message": "A valid publishable key is required in the X-Publishable-Key header"
+                      }
+                    }
+                  },
+                  "unauthorized": {
+                    "value": {
+                      "error": {
+                        "code": "unauthorized",
+                        "message": "Authentication required"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },
     "/v1/sessions": {
       "get": {
-        "tags": ["Sessions"],
+        "tags": [
+          "Sessions"
+        ],
         "summary": "List your signed-in devices",
         "operationId": "listSessions",
-        "security": [{ "cookieAuth": [] }],
+        "security": [
+          {
+            "publishableKey": [],
+            "cookieAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Live sessions, newest first",
-            "content": { "application/json": { "schema": { "type": "object", "properties": { "sessions": { "type": "array", "items": { "$ref": "#/components/schemas/Session" } } } } } }
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sessions": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Session"
+                      }
+                    }
+                  }
+                }
+              }
+            }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" }
+          "401": {
+            "description": "Missing/unknown publishable key, or missing, unknown, revoked or expired session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "invalid_publishable_key": {
+                    "value": {
+                      "error": {
+                        "code": "invalid_publishable_key",
+                        "message": "A valid publishable key is required in the X-Publishable-Key header"
+                      }
+                    }
+                  },
+                  "unauthorized": {
+                    "value": {
+                      "error": {
+                        "code": "unauthorized",
+                        "message": "Authentication required"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },
     "/v1/sessions/{id}": {
       "delete": {
-        "tags": ["Sessions"],
+        "tags": [
+          "Sessions"
+        ],
         "summary": "Sign out one device",
         "description": "Revokes one of your own sessions; your other sessions stay alive. Someone else's session, an already-revoked one and a malformed id all return the same 404.",
         "operationId": "revokeSession",
-        "security": [{ "cookieAuth": [] }],
-        "parameters": [{ "$ref": "#/components/parameters/SessionID" }],
+        "security": [
+          {
+            "publishableKey": [],
+            "cookieAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionID"
+          }
+        ],
         "responses": {
-          "204": { "description": "Session revoked" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "404": { "$ref": "#/components/responses/NotFound" }
+          "204": {
+            "description": "Session revoked"
+          },
+          "401": {
+            "description": "Missing/unknown publishable key, or missing, unknown, revoked or expired session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "invalid_publishable_key": {
+                    "value": {
+                      "error": {
+                        "code": "invalid_publishable_key",
+                        "message": "A valid publishable key is required in the X-Publishable-Key header"
+                      }
+                    }
+                  },
+                  "unauthorized": {
+                    "value": {
+                      "error": {
+                        "code": "unauthorized",
+                        "message": "Authentication required"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
         }
       }
     },
     "/v1/sessions/{id}/token": {
       "post": {
-        "tags": ["Tokens"],
+        "tags": [
+          "Tokens"
+        ],
         "summary": "Get a short-lived access token (JWT)",
-        "description": "Returns an ES256-signed JWT valid for 60 seconds with claims `iss`, `sub` (user id), `sid` (session id), `aud`, `exp`, `nbf`, `iat` and `jti`. Only the current session can mint tokens, so use the `id` from `GET /v1/me`. After the session is revoked no new tokens are issued, and the last one dies within 60 seconds.",
+        "description": "Returns an ES256-signed JWT valid for 60 seconds with claims `iss` (this application's issuer), `sub` (user id), `sid` (session id), `aud` (the application id), `exp`, `nbf`, `iat` and `jti`, signed with **this application's** key. Only the current session can mint tokens, so use the `id` from `GET /v1/me`. After the session is revoked no new tokens are issued, and the last one dies within 60 seconds.",
         "operationId": "issueToken",
-        "security": [{ "cookieAuth": [] }],
-        "parameters": [{ "$ref": "#/components/parameters/SessionID" }],
+        "security": [
+          {
+            "publishableKey": [],
+            "cookieAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionID"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Access token",
-            "headers": { "Cache-Control": { "schema": { "type": "string" }, "example": "no-store" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TokenResponse" } } }
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "503": { "$ref": "#/components/responses/Error" }
+          "401": {
+            "description": "Missing/unknown publishable key, or missing, unknown, revoked or expired session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "invalid_publishable_key": {
+                    "value": {
+                      "error": {
+                        "code": "invalid_publishable_key",
+                        "message": "A valid publishable key is required in the X-Publishable-Key header"
+                      }
+                    }
+                  },
+                  "unauthorized": {
+                    "value": {
+                      "error": {
+                        "code": "unauthorized",
+                        "message": "Authentication required"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/apps/{app_id}/.well-known/jwks.json": {
+      "get": {
+        "tags": [
+          "Tokens"
+        ],
+        "summary": "An application's public signing keys (JWKS)",
+        "operationId": "jwks",
+        "description": "Public, no credentials. Each application has its own key set, and its tokens' `iss` is this URL's `.../apps/{app_id}`. Verifiers fetch the set once, cache it, and check signatures locally. A rotated-in key is listed 10 minutes before it signs anything, and a retired key stays listed for 24 hours. Responses are cacheable for 5 minutes.",
+        "parameters": [
+          {
+            "name": "app_id",
+            "in": "path",
+            "required": true,
+            "description": "Application id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "JSON Web Key Set (RFC 7517)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JWKS"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=300"
+              }
+            }
+          },
+          "404": {
+            "description": "No such application",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "not_found",
+                    "message": "Application not found"
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/backend/users": {
+      "get": {
+        "tags": [
+          "Backend"
+        ],
+        "summary": "List the application's users",
+        "operationId": "backendListUsers",
+        "security": [
+          {
+            "secretKey": []
+          }
+        ],
+        "description": "Returns only users of the application the secret key belongs to, newest first. A publishable key, a developer token or no credential gets 401.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "users": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/BackendUser"
+                      }
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/InvalidSecretKey"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/v1/backend/users/{id}": {
+      "get": {
+        "tags": [
+          "Backend"
+        ],
+        "summary": "Get one user",
+        "operationId": "backendGetUser",
+        "security": [
+          {
+            "secretKey": []
+          }
+        ],
+        "description": "A user of another application is a 404, exactly like a user that does not exist.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackendUser"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/InvalidSecretKey"
+          },
+          "404": {
+            "description": "No such user in this application",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "not_found",
+                    "message": "User not found"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/platform/signup": {
+      "post": {
+        "tags": [
+          "Platform: account"
+        ],
+        "summary": "Create a developer account",
+        "operationId": "platformSignup",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Credentials"
+              },
+              "example": {
+                "email": "dev@example.com",
+                "password": "a long dashboard password"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Developer created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Developer"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidJSON"
+          },
+          "409": {
+            "description": "Email already registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "email_taken",
+                    "message": "An account with this email already exists"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/v1/platform/login": {
+      "post": {
+        "tags": [
+          "Platform: account"
+        ],
+        "summary": "Sign in; returns a developer token",
+        "operationId": "platformLogin",
+        "description": "Copy the `token`, click *Authorize* and paste it under **developerToken**.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Credentials"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "example": "dvt_..."
+                    },
+                    "token_type": {
+                      "type": "string",
+                      "example": "Bearer"
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "developer": {
+                      "$ref": "#/components/schemas/Developer"
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidJSON"
+          },
+          "401": {
+            "description": "Invalid email or password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "invalid_credentials",
+                    "message": "Invalid email or password"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/platform/me": {
+      "get": {
+        "tags": [
+          "Platform: account"
+        ],
+        "summary": "The signed-in developer",
+        "operationId": "platformMe",
+        "security": [
+          {
+            "developerToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Developer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Developer"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/PlatformUnauthorized"
+          }
+        }
+      }
+    },
+    "/v1/platform/logout": {
+      "post": {
+        "tags": [
+          "Platform: account"
+        ],
+        "summary": "Revoke the developer token",
+        "operationId": "platformLogout",
+        "security": [
+          {
+            "developerToken": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Signed out"
+          },
+          "401": {
+            "$ref": "#/components/responses/PlatformUnauthorized"
+          }
+        }
+      }
+    },
+    "/v1/platform/applications": {
+      "get": {
+        "tags": [
+          "Platform: applications"
+        ],
+        "summary": "List your applications",
+        "operationId": "listApplications",
+        "security": [
+          {
+            "developerToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Applications",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "applications": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Application"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/PlatformUnauthorized"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Platform: applications"
+        ],
+        "summary": "Create an application",
+        "operationId": "createApplication",
+        "security": [
+          {
+            "developerToken": []
+          }
+        ],
+        "description": "Generates the publishable key, the **secret key (shown only in this response)**, and the application's first signing key. Settings start at their defaults; change them with `PATCH`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  }
+                }
+              },
+              "example": {
+                "name": "My app"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Application created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Application"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidJSON"
+          },
+          "401": {
+            "$ref": "#/components/responses/PlatformUnauthorized"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/v1/platform/applications/{id}": {
+      "get": {
+        "tags": [
+          "Platform: applications"
+        ],
+        "summary": "Get one application",
+        "operationId": "getApplication",
+        "security": [
+          {
+            "developerToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ApplicationID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Application",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Application"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/PlatformUnauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/AppNotFound"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Platform: applications"
+        ],
+        "summary": "Update name and settings",
+        "operationId": "updateApplication",
+        "security": [
+          {
+            "developerToken": []
+          }
+        ],
+        "description": "Session lifetime and idle timeout apply to sessions created or checked from now on. Try `signup_enabled: false`, then `POST /v1/signup` with that application's publishable key.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ApplicationID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplicationPatch"
+              },
+              "example": {
+                "allowed_origins": [
+                  "https://app.example.com"
+                ],
+                "session_lifetime_seconds": 86400,
+                "session_idle_timeout_seconds": 3600,
+                "signup_enabled": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated application",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Application"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidJSON"
+          },
+          "401": {
+            "$ref": "#/components/responses/PlatformUnauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/AppNotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/v1/platform/applications/{id}/secret-key/roll": {
+      "post": {
+        "tags": [
+          "Platform: applications"
+        ],
+        "summary": "Roll the secret key",
+        "operationId": "rollSecretKey",
+        "security": [
+          {
+            "developerToken": []
+          }
+        ],
+        "description": "Issues a new secret key, shown only in this response. The old one stops working immediately.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ApplicationID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Application with the new secret key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Application"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/PlatformUnauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/AppNotFound"
+          }
+        }
+      }
+    },
+    "/v1/platform/applications/{id}/signing-keys/rotate": {
+      "post": {
+        "tags": [
+          "Platform: applications"
+        ],
+        "summary": "Rotate the application's token signing key",
+        "operationId": "rotateSigningKey",
+        "security": [
+          {
+            "developerToken": []
+          }
+        ],
+        "description": "Two-phase and safe: the new key is published in the JWKS now and signs from `active_from` (10 minutes later); the old key keeps signing until then and stays published for 24 hours. Other applications are unaffected.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ApplicationID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rotation scheduled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "kid": {
+                      "type": "string"
+                    },
+                    "active_from": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/PlatformUnauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/AppNotFound"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
         }
       }
     }
   },
   "components": {
     "securitySchemes": {
+      "publishableKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Publishable-Key",
+        "description": "`pk_live_...` Identifies the application. Safe to ship in a browser; it grants no access by itself."
+      },
       "cookieAuth": {
         "type": "apiKey",
         "in": "cookie",
         "name": "session",
-        "description": "Set by `POST /v1/login`. Your browser sends it automatically; you cannot paste it here."
+        "description": "Set by `POST /v1/login` as `session_<part of the publishable key>`. Your browser sends it automatically; you cannot paste it here."
+      },
+      "secretKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "`sk_live_...` Authorises a developer's server for one application. Never put it in a browser."
+      },
+      "developerToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "`dvt_...` returned by `POST /v1/platform/login`. Valid for 7 days or until logout."
       }
     },
     "parameters": {
@@ -179,80 +1288,315 @@
         "in": "path",
         "required": true,
         "description": "Session id (UUID), as returned by `GET /v1/me` or `GET /v1/sessions`.",
-        "schema": { "type": "string" }
+        "schema": {
+          "type": "string"
+        }
+      },
+      "ApplicationID": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "Application id (UUID), from `POST /v1/platform/applications` or `GET /v1/platform/applications`.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "UserID": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "User id (UUID).",
+        "schema": {
+          "type": "string"
+        }
       }
     },
     "responses": {
       "Unauthorized": {
         "description": "Missing, unknown, revoked or expired session",
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": { "code": "unauthorized", "message": "Authentication required" } } } }
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "unauthorized",
+                "message": "Authentication required"
+              }
+            }
+          }
+        }
       },
       "NotFound": {
         "description": "No such session for this user",
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": { "code": "not_found", "message": "Session not found" } } } }
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "not_found",
+                "message": "Session not found"
+              }
+            }
+          }
+        }
       },
       "InvalidJSON": {
         "description": "Body is not valid JSON or has unexpected fields",
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": { "code": "invalid_json", "message": "Request body must be valid JSON with only the expected fields" } } } }
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "invalid_json",
+                "message": "Request body must be valid JSON with only the expected fields"
+              }
+            }
+          }
+        }
       },
       "Error": {
         "description": "Error",
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "InvalidPublishableKey": {
+        "description": "Missing, malformed or unknown `X-Publishable-Key`",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "invalid_publishable_key",
+                "message": "A valid publishable key is required in the X-Publishable-Key header"
+              }
+            }
+          }
+        }
+      },
+      "InvalidSecretKey": {
+        "description": "Missing or invalid secret key. A publishable key is rejected here.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "invalid_secret_key",
+                "message": "A valid secret key is required"
+              }
+            }
+          }
+        }
+      },
+      "PlatformUnauthorized": {
+        "description": "Missing, expired or revoked developer token",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "unauthorized",
+                "message": "Authentication required"
+              }
+            }
+          }
+        }
+      },
+      "AppNotFound": {
+        "description": "No such application, or it belongs to another developer",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "not_found",
+                "message": "Application not found"
+              }
+            }
+          }
+        }
+      },
+      "ValidationError": {
+        "description": "A field is invalid",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "validation_error",
+                "message": "name must be 1-100 characters"
+              }
+            }
+          }
+        }
       }
     },
     "schemas": {
       "Health": {
         "type": "object",
-        "properties": { "status": { "type": "string", "enum": ["ok", "unavailable"] }, "database": { "type": "string", "enum": ["up", "down"] } }
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "unavailable"
+            ]
+          },
+          "database": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down"
+            ]
+          }
+        }
       },
       "Credentials": {
         "type": "object",
-        "required": ["email", "password"],
+        "required": [
+          "email",
+          "password"
+        ],
         "additionalProperties": false,
         "properties": {
-          "email": { "type": "string", "format": "email", "maxLength": 254 },
-          "password": { "type": "string", "format": "password", "minLength": 8, "maxLength": 128 }
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 254
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "minLength": 8,
+            "maxLength": 128
+          }
         }
       },
       "User": {
         "type": "object",
-        "properties": { "id": { "type": "string", "format": "uuid" }, "email": { "type": "string", "format": "email" } }
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          }
+        }
       },
       "Session": {
         "type": "object",
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "user_agent": { "type": "string" },
-          "ip": { "type": "string" },
-          "created_at": { "type": "string", "format": "date-time" },
-          "last_active_at": { "type": "string", "format": "date-time" },
-          "expires_at": { "type": "string", "format": "date-time" },
-          "current": { "type": "boolean", "description": "True for the session making this request" }
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "user_agent": {
+            "type": "string"
+          },
+          "ip": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_active_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "current": {
+            "type": "boolean",
+            "description": "True for the session making this request"
+          }
         }
       },
       "TokenResponse": {
         "type": "object",
         "properties": {
-          "token": { "type": "string", "description": "Compact JWT (header.payload.signature)" },
-          "token_type": { "type": "string", "example": "Bearer" },
-          "expires_at": { "type": "string", "format": "date-time" },
-          "expires_in": { "type": "integer", "example": 60, "description": "Seconds until expiry" }
+          "token": {
+            "type": "string",
+            "description": "Compact JWT (header.payload.signature)"
+          },
+          "token_type": {
+            "type": "string",
+            "example": "Bearer"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_in": {
+            "type": "integer",
+            "example": 60,
+            "description": "Seconds until expiry"
+          }
         }
       },
       "JWKS": {
         "type": "object",
-        "properties": { "keys": { "type": "array", "items": { "$ref": "#/components/schemas/JWK" } } }
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JWK"
+            }
+          }
+        }
       },
       "JWK": {
         "type": "object",
         "properties": {
-          "kty": { "type": "string", "example": "EC" },
-          "crv": { "type": "string", "example": "P-256" },
-          "x": { "type": "string" },
-          "y": { "type": "string" },
-          "kid": { "type": "string" },
-          "alg": { "type": "string", "example": "ES256" },
-          "use": { "type": "string", "example": "sig" }
+          "kty": {
+            "type": "string",
+            "example": "EC"
+          },
+          "crv": {
+            "type": "string",
+            "example": "P-256"
+          },
+          "x": {
+            "type": "string"
+          },
+          "y": {
+            "type": "string"
+          },
+          "kid": {
+            "type": "string"
+          },
+          "alg": {
+            "type": "string",
+            "example": "ES256"
+          },
+          "use": {
+            "type": "string",
+            "example": "sig"
+          }
         }
       },
       "Error": {
@@ -260,7 +1604,148 @@
         "properties": {
           "error": {
             "type": "object",
-            "properties": { "code": { "type": "string" }, "message": { "type": "string" } }
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "Application": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "publishable_key": {
+            "type": "string",
+            "example": "pk_live_Xk3f9aQ2mZ7cVb1nT4yL8wHp"
+          },
+          "secret_key_last4": {
+            "type": "string",
+            "description": "Last four characters of the active secret key, to tell keys apart"
+          },
+          "issuer": {
+            "type": "string",
+            "description": "The `iss` of this application's tokens. Configure the SDK with it.",
+            "example": "https://auth.example.com/apps/0f6c..."
+          },
+          "jwks_url": {
+            "type": "string",
+            "description": "Where this application's public signing keys are published"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/ApplicationSettings"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "secret_key": {
+            "type": "string",
+            "description": "Present ONLY in the response that creates or rolls the key. It is stored as a hash and cannot be shown again."
+          }
+        }
+      },
+      "ApplicationSettings": {
+        "type": "object",
+        "properties": {
+          "allowed_origins": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Browser origins allowed to call the API. Stored now; enforced with CORS in Stage 8."
+          },
+          "session_lifetime_seconds": {
+            "type": "integer",
+            "minimum": 3600,
+            "maximum": 31536000,
+            "default": 2592000,
+            "description": "Absolute lifetime of a session, whatever the activity."
+          },
+          "session_idle_timeout_seconds": {
+            "type": "integer",
+            "minimum": 300,
+            "maximum": 31536000,
+            "default": 604800,
+            "description": "A session with no activity for this long is signed out. Cannot exceed the lifetime."
+          },
+          "signup_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "When false, `POST /v1/signup` returns 403 `signup_disabled`. Existing users can still log in."
+          }
+        }
+      },
+      "ApplicationPatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Every field is optional; omitted fields are unchanged.",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "allowed_origins": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "string"
+            },
+            "description": "`scheme://host[:port]`, http or https only, no path or wildcard. Normalised and de-duplicated."
+          },
+          "session_lifetime_seconds": {
+            "type": "integer",
+            "minimum": 3600,
+            "maximum": 31536000
+          },
+          "session_idle_timeout_seconds": {
+            "type": "integer",
+            "minimum": 300,
+            "maximum": 31536000
+          },
+          "signup_enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Developer": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          }
+        }
+      },
+      "BackendUser": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       }

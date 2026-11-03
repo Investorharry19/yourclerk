@@ -5,16 +5,15 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/Investorharry19/yourclerk/internal/auth"
 	"github.com/Investorharry19/yourclerk/internal/store"
 )
 
-// cleanupSessions deletes dead sessions once at startup and then every interval,
+// cleanupSessions deletes dead sessions (judged by each application's own
+// idle timeout) once at startup and then every interval,
 // until ctx is cancelled.
 func cleanupSessions(ctx context.Context, log *slog.Logger, db *store.Store, every time.Duration) {
 	run := func() {
-		now := time.Now()
-		n, err := db.DeleteExpiredSessions(ctx, now, now.Add(-auth.IdleTTL))
+		n, err := db.DeleteExpiredSessions(ctx, time.Now())
 		switch {
 		case ctx.Err() != nil:
 			return

@@ -12,9 +12,10 @@ const (
 	// TokenBytes is the amount of randomness in a session token (256 bits).
 	TokenBytes = 32
 
-	// AbsoluteTTL is the longest a session can live, however active.
+	// AbsoluteTTL is the default absolute session lifetime of a new application
+	// (the column default in migration 00005; each application can change it).
 	AbsoluteTTL = 30 * 24 * time.Hour
-	// IdleTTL is how long a session may sit unused before it dies.
+	// IdleTTL is the default idle timeout of a new application (likewise per application).
 	IdleTTL = 7 * 24 * time.Hour
 )
 

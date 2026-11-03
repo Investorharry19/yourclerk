@@ -1,6 +1,6 @@
 // Command demo is a tiny backend protected by the yourclerk Go SDK.
 //
-//	YOURCLERK_ISSUER=http://localhost:8080 go run ./examples/demo
+//	YOURCLERK_ISSUER=http://localhost:8080/apps/<application id> go run ./examples/demo
 //
 // It has no shared secret with the yourclerk server and does not call it per
 // request: it only downloads the public keys (JWKS) and caches them.
@@ -16,7 +16,10 @@ import (
 )
 
 func main() {
-	issuer := getenv("YOURCLERK_ISSUER", "http://localhost:8080")
+	issuer := os.Getenv("YOURCLERK_ISSUER")
+	if issuer == "" {
+		log.Fatal("set YOURCLERK_ISSUER to your application's issuer URL, e.g. http://localhost:8080/apps/<application id> (the \"issuer\" field of POST /v1/platform/applications)")
+	}
 	addr := getenv("ADDR", ":9090")
 
 	clerk, err := yourclerk.New(yourclerk.Config{

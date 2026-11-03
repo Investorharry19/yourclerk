@@ -36,14 +36,14 @@ migrate-down: ## roll back one migration
 migrate-status:
 	$(MIGRATE) status
 
-rotate-key: ## publish a new JWT key now; it starts signing in 10 minutes (-delay 0 for dev)
-	go run ./cmd/keys rotate
+rotate-key: ## rotate one application's JWT key: make rotate-key APP=<application-id> [DELAY=0s for dev]
+	go run ./cmd/keys rotate $(if $(DELAY),-delay $(DELAY)) $(APP)
 
-list-keys:
-	go run ./cmd/keys list
+list-keys: ## list one application's published keys: make list-keys APP=<application-id>
+	go run ./cmd/keys list $(APP)
 
 test-sdk: ## test the Go SDK (a separate module)
 	cd sdk/go && go vet ./... && go test ./... -count=1
 
-demo: ## run the SDK demo app on :9090 (needs the API running)
+demo: ## run the SDK demo on :9090: make demo YOURCLERK_ISSUER=http://localhost:8080/apps/<application id>
 	cd sdk/go && go run ./examples/demo
