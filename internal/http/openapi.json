@@ -1,0 +1,269 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "yourclerk API",
+    "version": "0.3.0",
+    "description": "Hosted identity service built stage by stage.\n\n**How to test in this page**\n1. `POST /v1/signup` with an email and a password of at least 8 characters.\n2. `POST /v1/login` with the same credentials. The server sets an `HttpOnly` cookie named `session`, and your browser sends it automatically on every later request from this page.\n3. Try `GET /v1/me`, `GET /v1/sessions`, `POST /v1/logout`.\n4. `POST /v1/sessions/{id}/token` (use the session `id` from `/v1/me`) returns a 60-second JWT. Paste it into https://jwt.io or verify it with the Go SDK in `sdk/go`.\n\nThe cookie is not visible to JavaScript or to the Authorize dialog; that is intentional. To act as a different user, call `POST /v1/logout` and log in again. This page only works on the same origin as the API, and the `Secure` cookie flag is off only when `APP_ENV=development`."
+  },
+  "servers": [{ "url": "/" }],
+  "tags": [
+    { "name": "Health" },
+    { "name": "Accounts", "description": "Sign up and log in with email and password." },
+    { "name": "Sessions", "description": "Cookie sessions: who am I, which devices, sign out." },
+    { "name": "Tokens", "description": "Short-lived JWTs and the public keys that verify them." }
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "Liveness and database check",
+        "operationId": "healthz",
+        "responses": {
+          "200": {
+            "description": "Server and database are up",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" }, "example": { "status": "ok", "database": "up" } } }
+          },
+          "503": {
+            "description": "Database unreachable",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" }, "example": { "status": "unavailable", "database": "down" } } }
+          }
+        }
+      }
+    },
+    "/.well-known/jwks.json": {
+      "get": {
+        "tags": ["Tokens"],
+        "summary": "Public signing keys (JWKS)",
+        "description": "Verifiers fetch this once, cache it, and check token signatures locally. A rotated-in key is listed 10 minutes before it signs anything, and a retired key stays listed for 24 hours, so no token ever needs a key you have not had the chance to cache. Responses are cacheable for 5 minutes.",
+        "operationId": "jwks",
+        "responses": {
+          "200": {
+            "description": "JSON Web Key Set (RFC 7517)",
+            "headers": { "Cache-Control": { "schema": { "type": "string" }, "example": "public, max-age=300" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JWKS" } } }
+          },
+          "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/v1/signup": {
+      "post": {
+        "tags": ["Accounts"],
+        "summary": "Create an account",
+        "description": "The email is trimmed and lower-cased, so `Alice@Example.com` and `alice@example.com` are the same account. Passwords must be 8 to 128 characters and are stored only as Argon2id hashes.",
+        "operationId": "signup",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Credentials" }, "example": { "email": "alice@example.com", "password": "correct horse battery" } } }
+        },
+        "responses": {
+          "201": { "description": "Account created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } },
+          "400": { "$ref": "#/components/responses/InvalidJSON" },
+          "409": { "description": "Email already registered", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": { "code": "email_taken", "message": "An account with this email already exists" } } } } },
+          "422": { "description": "Invalid email or password", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": { "code": "validation_error", "message": "Password must be at least 8 characters" } } } } }
+        }
+      }
+    },
+    "/v1/login": {
+      "post": {
+        "tags": ["Accounts"],
+        "summary": "Log in and start a session",
+        "description": "On success the response sets the `session` cookie (`HttpOnly`, `SameSite=Lax`, `Secure` unless in development). An unknown email and a wrong password return the identical 401 and take the same time.",
+        "operationId": "login",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Credentials" }, "example": { "email": "alice@example.com", "password": "correct horse battery" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Logged in",
+            "headers": { "Set-Cookie": { "schema": { "type": "string" }, "description": "session=<token>; HttpOnly; SameSite=Lax; Path=/" } },
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "user": { "$ref": "#/components/schemas/User" } } } } }
+          },
+          "400": { "$ref": "#/components/responses/InvalidJSON" },
+          "401": { "description": "Invalid email or password", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": { "code": "invalid_credentials", "message": "Invalid email or password" } } } } }
+        }
+      }
+    },
+    "/v1/me": {
+      "get": {
+        "tags": ["Sessions"],
+        "summary": "The signed-in user and current session",
+        "operationId": "me",
+        "security": [{ "cookieAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Current user",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "user": { "$ref": "#/components/schemas/User" }, "session": { "type": "object", "properties": { "id": { "type": "string", "format": "uuid" } } } } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/v1/logout": {
+      "post": {
+        "tags": ["Sessions"],
+        "summary": "Sign out this device",
+        "description": "Revokes the current session and clears the cookie. A copy of the old cookie stops working immediately.",
+        "operationId": "logout",
+        "security": [{ "cookieAuth": [] }],
+        "responses": {
+          "204": { "description": "Signed out" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/v1/sessions": {
+      "get": {
+        "tags": ["Sessions"],
+        "summary": "List your signed-in devices",
+        "operationId": "listSessions",
+        "security": [{ "cookieAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Live sessions, newest first",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "sessions": { "type": "array", "items": { "$ref": "#/components/schemas/Session" } } } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/v1/sessions/{id}": {
+      "delete": {
+        "tags": ["Sessions"],
+        "summary": "Sign out one device",
+        "description": "Revokes one of your own sessions; your other sessions stay alive. Someone else's session, an already-revoked one and a malformed id all return the same 404.",
+        "operationId": "revokeSession",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/SessionID" }],
+        "responses": {
+          "204": { "description": "Session revoked" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/v1/sessions/{id}/token": {
+      "post": {
+        "tags": ["Tokens"],
+        "summary": "Get a short-lived access token (JWT)",
+        "description": "Returns an ES256-signed JWT valid for 60 seconds with claims `iss`, `sub` (user id), `sid` (session id), `aud`, `exp`, `nbf`, `iat` and `jti`. Only the current session can mint tokens, so use the `id` from `GET /v1/me`. After the session is revoked no new tokens are issued, and the last one dies within 60 seconds.",
+        "operationId": "issueToken",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/SessionID" }],
+        "responses": {
+          "200": {
+            "description": "Access token",
+            "headers": { "Cache-Control": { "schema": { "type": "string" }, "example": "no-store" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TokenResponse" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "cookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "session",
+        "description": "Set by `POST /v1/login`. Your browser sends it automatically; you cannot paste it here."
+      }
+    },
+    "parameters": {
+      "SessionID": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "Session id (UUID), as returned by `GET /v1/me` or `GET /v1/sessions`.",
+        "schema": { "type": "string" }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing, unknown, revoked or expired session",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": { "code": "unauthorized", "message": "Authentication required" } } } }
+      },
+      "NotFound": {
+        "description": "No such session for this user",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": { "code": "not_found", "message": "Session not found" } } } }
+      },
+      "InvalidJSON": {
+        "description": "Body is not valid JSON or has unexpected fields",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": { "code": "invalid_json", "message": "Request body must be valid JSON with only the expected fields" } } } }
+      },
+      "Error": {
+        "description": "Error",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      }
+    },
+    "schemas": {
+      "Health": {
+        "type": "object",
+        "properties": { "status": { "type": "string", "enum": ["ok", "unavailable"] }, "database": { "type": "string", "enum": ["up", "down"] } }
+      },
+      "Credentials": {
+        "type": "object",
+        "required": ["email", "password"],
+        "additionalProperties": false,
+        "properties": {
+          "email": { "type": "string", "format": "email", "maxLength": 254 },
+          "password": { "type": "string", "format": "password", "minLength": 8, "maxLength": 128 }
+        }
+      },
+      "User": {
+        "type": "object",
+        "properties": { "id": { "type": "string", "format": "uuid" }, "email": { "type": "string", "format": "email" } }
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "user_agent": { "type": "string" },
+          "ip": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "last_active_at": { "type": "string", "format": "date-time" },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "current": { "type": "boolean", "description": "True for the session making this request" }
+        }
+      },
+      "TokenResponse": {
+        "type": "object",
+        "properties": {
+          "token": { "type": "string", "description": "Compact JWT (header.payload.signature)" },
+          "token_type": { "type": "string", "example": "Bearer" },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "expires_in": { "type": "integer", "example": 60, "description": "Seconds until expiry" }
+        }
+      },
+      "JWKS": {
+        "type": "object",
+        "properties": { "keys": { "type": "array", "items": { "$ref": "#/components/schemas/JWK" } } }
+      },
+      "JWK": {
+        "type": "object",
+        "properties": {
+          "kty": { "type": "string", "example": "EC" },
+          "crv": { "type": "string", "example": "P-256" },
+          "x": { "type": "string" },
+          "y": { "type": "string" },
+          "kid": { "type": "string" },
+          "alg": { "type": "string", "example": "ES256" },
+          "use": { "type": "string", "example": "sig" }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": { "code": { "type": "string" }, "message": { "type": "string" } }
+          }
+        }
+      }
+    }
+  }
+}
