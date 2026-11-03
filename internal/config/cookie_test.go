@@ -12,7 +12,7 @@ func TestCookieSecure(t *testing.T) {
 		{"development default is off", map[string]string{"DATABASE_URL": "x"}, false, false},
 		{"explicit development", map[string]string{"DATABASE_URL": "x", "APP_ENV": "development"}, false, false},
 		{"staging default is on", map[string]string{"DATABASE_URL": "x", "APP_ENV": "staging"}, true, false},
-		{"production default is on", map[string]string{"DATABASE_URL": "x", "APP_ENV": "production", "SECRET_KEY": "0123456789abcdef0123456789abcdef"}, true, false},
+		{"production default is on", map[string]string{"DATABASE_URL": "x", "APP_ENV": "production", "SECRET_KEY": "0123456789abcdef0123456789abcdef", "ISSUER": "https://auth.example.com"}, true, false},
 		{"override on in development", map[string]string{"DATABASE_URL": "x", "COOKIE_SECURE": "true"}, true, false},
 		{"garbage", map[string]string{"DATABASE_URL": "x", "COOKIE_SECURE": "maybe"}, false, true},
 	}

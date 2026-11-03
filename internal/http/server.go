@@ -37,6 +37,11 @@ func (s *Server) Handler() nethttp.Handler {
 	r.Use(Recoverer(s.log))
 
 	r.Get("/healthz", s.handleHealthz)
+	r.Get("/.well-known/jwks.json", s.handleJWKS)
+	if s.opts.EnableDocs {
+		r.Get("/docs", s.handleDocs)
+		r.Get("/openapi.json", s.handleOpenAPI)
+	}
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Post("/signup", s.handleSignup)
@@ -48,6 +53,7 @@ func (s *Server) Handler() nethttp.Handler {
 			r.Post("/logout", s.handleLogout)
 			r.Get("/sessions", s.handleListSessions)
 			r.Delete("/sessions/{id}", s.handleRevokeSession)
+			r.Post("/sessions/{id}/token", s.handleIssueToken)
 		})
 	})
 	return r

@@ -18,8 +18,8 @@ func TestLoad(t *testing.T) {
 		{"missing db url", map[string]string{}, true, 0},
 		{"bad port", map[string]string{"DATABASE_URL": "postgres://x", "PORT": "abc"}, true, 0},
 		{"port out of range", map[string]string{"DATABASE_URL": "postgres://x", "PORT": "70000"}, true, 0},
-		{"prod needs secret", map[string]string{"DATABASE_URL": "postgres://x", "APP_ENV": "production"}, true, 0},
-		{"prod ok", map[string]string{"DATABASE_URL": "postgres://x", "APP_ENV": "production", "SECRET_KEY": "0123456789abcdef0123456789abcdef"}, false, 8080},
+		{"prod needs secret", map[string]string{"DATABASE_URL": "postgres://x", "APP_ENV": "production", "ISSUER": "https://auth.example.com"}, true, 0},
+		{"prod ok", map[string]string{"DATABASE_URL": "postgres://x", "APP_ENV": "production", "SECRET_KEY": "0123456789abcdef0123456789abcdef", "ISSUER": "https://auth.example.com"}, false, 8080},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

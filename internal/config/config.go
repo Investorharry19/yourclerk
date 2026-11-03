@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -20,6 +21,14 @@ type Config struct {
 	// true everywhere except APP_ENV=development, because browsers will not
 	// send Secure cookies over plain http (curl and cookie jars included).
 	CookieSecure bool
+
+	// Issuer is the "iss" claim in access tokens and the base URL verifiers
+	// use to find the JWKS. It must be the public URL of this service.
+	Issuer string
+
+	// EnableDocs serves Swagger UI at /docs and the spec at /openapi.json.
+	// On by default in development only.
+	EnableDocs bool
 }
 
 // Load reads configuration from the environment and validates it.
@@ -46,6 +55,20 @@ func load(get func(string) string) (Config, error) {
 		return Config{}, errors.New("COOKIE_SECURE must be true or false")
 	}
 	cfg.CookieSecure = secure
+
+	docs, err := strconv.ParseBool(withDefault(get("ENABLE_DOCS"), strconv.FormatBool(cfg.Env == "development")))
+	if err != nil {
+		return Config{}, errors.New("ENABLE_DOCS must be true or false")
+	}
+	cfg.EnableDocs = docs
+
+	cfg.Issuer = strings.TrimRight(withDefault(get("ISSUER"), fmt.Sprintf("http://localhost:%d", port)), "/")
+	if !strings.HasPrefix(cfg.Issuer, "http://") && !strings.HasPrefix(cfg.Issuer, "https://") {
+		return Config{}, errors.New("ISSUER must start with http:// or https://")
+	}
+	if cfg.Env == "production" && !strings.HasPrefix(cfg.Issuer, "https://") {
+		return Config{}, errors.New("ISSUER must use https:// in production")
+	}
 
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")

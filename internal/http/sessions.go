@@ -41,6 +41,11 @@ type Options struct {
 	AbsoluteTTL  time.Duration
 	IdleTTL      time.Duration
 	Now          func() time.Time
+
+	// Tokens issues access tokens and serves the JWKS. Nil disables those endpoints.
+	Tokens TokenIssuer
+	// EnableDocs serves Swagger UI at /docs and the OpenAPI spec at /openapi.json.
+	EnableDocs bool
 }
 
 func (o Options) withDefaults() Options {
