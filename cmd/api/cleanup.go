@@ -8,19 +8,29 @@ import (
 	"github.com/Investorharry19/yourclerk/internal/store"
 )
 
-// cleanupSessions deletes dead sessions (judged by each application's own
-// idle timeout) once at startup and then every interval,
-// until ctx is cancelled.
-func cleanupSessions(ctx context.Context, log *slog.Logger, db *store.Store, every time.Duration) {
+// cleanup removes dead rows once at startup and then every interval, until ctx
+// is cancelled: sessions (judged by each application's own idle timeout),
+// spent or long-expired email tokens, and delivered or abandoned queued emails.
+func cleanup(ctx context.Context, log *slog.Logger, db *store.Store, every time.Duration) {
 	run := func() {
-		n, err := db.DeleteExpiredSessions(ctx, time.Now())
-		switch {
-		case ctx.Err() != nil:
-			return
-		case err != nil:
-			log.Error("session cleanup failed", "err", err)
-		case n > 0:
-			log.Info("session cleanup", "deleted", n)
+		now := time.Now()
+		for _, job := range []struct {
+			name string
+			fn   func(context.Context, time.Time) (int64, error)
+		}{
+			{"sessions", db.DeleteExpiredSessions},
+			{"email tokens", db.DeleteExpiredVerificationTokens},
+			{"email outbox", db.DeleteOldOutbox},
+		} {
+			n, err := job.fn(ctx, now)
+			switch {
+			case ctx.Err() != nil:
+				return
+			case err != nil:
+				log.Error("cleanup failed", "job", job.name, "err", err)
+			case n > 0:
+				log.Info("cleanup", "job", job.name, "deleted", n)
+			}
 		}
 	}
 

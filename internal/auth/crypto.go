@@ -13,8 +13,10 @@ import (
 // prefix means the same secret used for something else yields a different key.
 // A production build would use a real KDF (HKDF) and a managed key; this is
 // enough to keep private signing keys encrypted at rest in the database.
-func deriveEncryptionKey(secret string) []byte {
-	sum := sha256.Sum256([]byte("yourclerk/signing-key-encryption/v1\x00" + secret))
+func deriveEncryptionKey(secret string) []byte { return deriveKey("signing-key-encryption", secret) }
+
+func deriveKey(purpose, secret string) []byte {
+	sum := sha256.Sum256([]byte("yourclerk/" + purpose + "/v1\x00" + secret))
 	return sum[:]
 }
 

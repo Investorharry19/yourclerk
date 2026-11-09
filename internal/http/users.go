@@ -25,12 +25,13 @@ type credentials struct {
 }
 
 type userResponse struct {
-	ID    string `json:"id"`
-	Email string `json:"email"`
+	ID            string `json:"id"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
 }
 
 func toUserResponse(u store.User) userResponse {
-	return userResponse{ID: u.ID, Email: u.Email}
+	return userResponse{ID: u.ID, Email: u.Email, EmailVerified: u.EmailVerified()}
 }
 
 func decodeJSON(w nethttp.ResponseWriter, r *nethttp.Request, dst any) bool {
@@ -104,14 +105,24 @@ func (s *Server) handleSignup(w nethttp.ResponseWriter, r *nethttp.Request) {
 	user, err := s.tenant(r).CreateUser(r.Context(), email, hash)
 	switch {
 	case errors.Is(err, store.ErrEmailTaken):
-		// Signup necessarily reveals that an email is registered. Stage 5
-		// (email verification) is where this gets closed properly.
+		// Signup still reveals that an email is registered in this application.
+		// Closing that (identical responses plus a notification email) needs
+		// rate limiting to be worth it, which is Stage 8.
 		WriteError(w, nethttp.StatusConflict, "email_taken", "An account with this email already exists")
 		return
 	case err != nil:
 		s.log.Error("signup: create user", "err", err)
 		WriteError(w, nethttp.StatusInternalServerError, "internal_error", "Something went wrong")
 		return
+	}
+
+	// Ask the new user to confirm their address. This only queues the email; a
+	// failure here (database hiccup) or later (provider outage, retried by the
+	// worker) never fails the signup. The user can ask for another one.
+	if s.email != nil {
+		if _, err := s.queueEmail(r.Context(), app, user, store.PurposeVerify, 0); err != nil {
+			s.log.Error("signup: queue verification email", "err", err, "user_id", user.ID, "application_id", app.ID)
+		}
 	}
 
 	WriteJSON(w, nethttp.StatusCreated, toUserResponse(user))

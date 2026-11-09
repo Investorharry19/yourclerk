@@ -22,6 +22,14 @@ type fakeWorld struct {
 	devSessions map[string]*fakeDevSession  // by token hash
 	apps        []*fakeApp
 	tenants     map[string]*fakeTenant
+	outbox      []*fakeMail
+	failIssue   error // when set, IssueEmailToken fails (simulates a database error)
+}
+
+// fakeMail is a queued email; payload is the sealed message, as in the real outbox.
+type fakeMail struct {
+	appID, kind, to string
+	payload         []byte
 }
 
 type fakeDevSession struct {
@@ -205,7 +213,7 @@ func (w *fakeWorld) ForApp(appID string) store.Tenant {
 	defer w.mu.Unlock()
 	t, ok := w.tenants[appID]
 	if !ok {
-		t = &fakeTenant{w: w}
+		t = &fakeTenant{w: w, appID: appID}
 		w.tenants[appID] = t
 	}
 	return t
@@ -215,10 +223,21 @@ func (w *fakeWorld) ForApp(appID string) store.Tenant {
 // reach another application's data through it.
 type fakeTenant struct {
 	w        *fakeWorld
+	appID    string
 	mu       sync.Mutex
 	users    []store.User
 	sessions []*fakeSession
+	tokens   []*fakeToken
 	touches  int
+}
+
+type fakeToken struct {
+	userID  string
+	purpose store.EmailPurpose
+	hash    string
+	created time.Time
+	expires time.Time
+	used    bool
 }
 
 type fakeSession struct {
@@ -368,3 +387,91 @@ var (
 	_ store.Tenant        = (*fakeTenant)(nil)
 	_ TokenIssuer         = (*auth.TokenService)(nil)
 )
+
+// --- email verification and password reset ---
+
+func (t *fakeTenant) IssueEmailToken(_ context.Context, userID string, purpose store.EmailPurpose, hash []byte, now, expires time.Time, cooldown time.Duration, msg store.OutboxMessage) (bool, error) {
+	if t.w.failIssue != nil {
+		return false, t.w.failIssue
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if cooldown > 0 {
+		for _, k := range t.tokens {
+			if k.userID == userID && k.purpose == purpose && k.created.After(now.Add(-cooldown)) {
+				return false, nil
+			}
+		}
+	}
+	for _, k := range t.tokens {
+		if k.userID == userID && k.purpose == purpose && !k.used {
+			k.used = true // superseded
+		}
+	}
+	t.tokens = append(t.tokens, &fakeToken{userID: userID, purpose: purpose, hash: string(hash), created: now, expires: expires})
+	t.w.mu.Lock()
+	t.w.outbox = append(t.w.outbox, &fakeMail{appID: t.appID, kind: string(msg.Kind), to: msg.ToEmail, payload: msg.Payload})
+	t.w.mu.Unlock()
+	return true, nil
+}
+
+// spend must be called with t.mu held.
+func (t *fakeTenant) spend(hash []byte, purpose store.EmailPurpose, now time.Time) (string, bool) {
+	for _, k := range t.tokens {
+		if k.hash == string(hash) && k.purpose == purpose && !k.used && k.expires.After(now) {
+			k.used = true
+			return k.userID, true
+		}
+	}
+	return "", false
+}
+
+func (t *fakeTenant) userIndex(id string) int {
+	for i, u := range t.users {
+		if u.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func (t *fakeTenant) ConsumeVerifyToken(_ context.Context, hash []byte, now time.Time) (store.User, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	id, ok := t.spend(hash, store.PurposeVerify, now)
+	if !ok {
+		return store.User{}, store.ErrNotFound
+	}
+	i := t.userIndex(id)
+	if t.users[i].EmailVerifiedAt == nil {
+		n := now
+		t.users[i].EmailVerifiedAt = &n
+	}
+	return t.users[i], nil
+}
+
+func (t *fakeTenant) ResetPassword(_ context.Context, hash []byte, newHash string, now time.Time) (store.User, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	id, ok := t.spend(hash, store.PurposeReset, now)
+	if !ok {
+		return store.User{}, store.ErrNotFound
+	}
+	i := t.userIndex(id)
+	t.users[i].PasswordHash = newHash
+	if t.users[i].EmailVerifiedAt == nil {
+		n := now
+		t.users[i].EmailVerifiedAt = &n
+	}
+	for _, s := range t.sessions {
+		if s.UserID == id {
+			s.revoked = true
+		}
+	}
+	for _, k := range t.tokens {
+		if k.userID == id && k.purpose == store.PurposeReset {
+			k.used = true
+		}
+	}
+	return t.users[i], nil
+}

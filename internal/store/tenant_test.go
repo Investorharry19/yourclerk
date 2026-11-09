@@ -353,12 +353,13 @@ func TestDeveloperSessions(t *testing.T) {
 // TestTenantQueriesAreScoped reads this package's own source and fails if any
 // SQL touching a tenant table lacks an application_id condition. Together with
 // AppStore being the only way to reach those tables, a missing filter cannot
-// slip in unnoticed. The single cross-tenant statement is allow-listed by name.
+// slip in unnoticed. The few cross-tenant statements (cleanup jobs and the mail
+// queue worker) carry a "-- cross-tenant:" marker in the SQL and are counted.
 func TestTenantQueriesAreScoped(t *testing.T) {
-	files := []string{"users.go", "sessions.go", "signing_keys.go"}
+	files := []string{"users.go", "sessions.go", "signing_keys.go", "verification.go", "outbox.go"}
 	rawSQL := regexp.MustCompile("(?s)`([^`]*)`")
-	tenantTable := regexp.MustCompile(`(?i)\b(FROM|UPDATE|INTO|JOIN)\s+(users|sessions|signing_keys)\b`)
-	checked := 0
+	tenantTable := regexp.MustCompile(`(?i)\b(FROM|UPDATE|INTO|JOIN)\s+(users|sessions|signing_keys|verification_tokens|email_outbox)\b`)
+	checked, crossTenant := 0, 0
 	for _, f := range files {
 		src, err := os.ReadFile(f)
 		if err != nil {
@@ -370,15 +371,20 @@ func TestTenantQueriesAreScoped(t *testing.T) {
 				continue
 			}
 			checked++
-			if strings.Contains(q, "DELETE FROM sessions s USING applications a") {
-				continue // DeleteExpiredSessions: deliberate maintenance query
+			if strings.Contains(q, "-- cross-tenant:") {
+				crossTenant++
+				continue // deliberate maintenance / queue-worker query, marked in the SQL itself
 			}
 			if !strings.Contains(q, "application_id = $1") && !strings.Contains(q, "(application_id,") {
 				t.Errorf("%s: tenant query without application_id scope:\n%s", f, q)
 			}
 		}
 	}
-	if checked < 15 {
+	if checked < 25 {
 		t.Fatalf("only %d tenant queries found; the scan is not looking at the right code", checked)
+	}
+	// Cross-tenant statements are an explicit, reviewed list: adding one means updating this number.
+	if crossTenant != 7 {
+		t.Fatalf("%d cross-tenant statements, want 7 (sessions cleanup, token cleanup, outbox claim, sent, failed x2, outbox cleanup)", crossTenant)
 	}
 }

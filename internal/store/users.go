@@ -27,13 +27,17 @@ type User struct {
 	PasswordHash string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	// EmailVerifiedAt is nil until the user proves they own the address.
+	EmailVerifiedAt *time.Time
 }
 
-const userColumns = "id::text, email, password_hash, created_at, updated_at"
+func (u User) EmailVerified() bool { return u.EmailVerifiedAt != nil }
+
+const userColumns = "id::text, email, password_hash, created_at, updated_at, email_verified_at"
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt)
+	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt, &u.EmailVerifiedAt)
 	return u, err
 }
 

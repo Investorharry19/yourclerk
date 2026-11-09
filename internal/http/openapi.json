@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "yourclerk API",
-    "version": "0.4.0",
-    "description": "Hosted identity service built stage by stage. Since Stage 4 it is **multi-tenant**: every end user belongs to an *application*, and each application has its own users, sessions, signing keys, issuer and settings.\n\n**Three kinds of caller, three credentials** (use the green *Authorize* button for the first two):\n\n| Who | Credential | Endpoints |\n|---|---|---|\n| A developer in the dashboard | `Authorization: Bearer dvt_...` (from `POST /v1/platform/login`) | `/v1/platform/...` |\n| A developer's backend | `Authorization: Bearer sk_live_...` (secret key) | `/v1/backend/...` |\n| An application's end users | `X-Publishable-Key: pk_live_...` header + a session cookie | `/v1/signup`, `/v1/login`, `/v1/me`, ... |\n\n**Quick start in this page**\n1. `POST /v1/platform/signup`, then `POST /v1/platform/login`. Copy the `token`, click *Authorize* and paste it under **developerToken**.\n2. `POST /v1/platform/applications` with a name. The response shows the **secret key once**; copy it. Note the `publishable_key` and `issuer`.\n3. Click *Authorize* again and paste the publishable key under **publishableKey** and the secret key under **secretKey**.\n4. As an end user: `POST /v1/signup` and `POST /v1/login`. The server sets an `HttpOnly` cookie named `session_<part of the publishable key>`, which your browser sends by itself. Then try `GET /v1/me`, `GET /v1/sessions` and `POST /v1/sessions/{id}/token`.\n5. As the developer's backend: `GET /v1/backend/users` lists that application's users.\n\n**Try the isolation**: create a second application, sign up the same email there with another password, and switch the publishable key. Each application sees only its own users. A token minted by one application fails verification against the other (different issuer, audience and keys), and a publishable key is refused on every secret-key endpoint.\n\nThis page only works on the same origin as the API, and the `Secure` cookie flag is off only when `APP_ENV=development`."
+    "version": "0.5.0",
+    "description": "Hosted identity service built stage by stage. Since Stage 4 it is **multi-tenant**: every end user belongs to an *application*, and each application has its own users, sessions, signing keys, issuer and settings.\n\n**Three kinds of caller, three credentials** (use the green *Authorize* button for the first two):\n\n| Who | Credential | Endpoints |\n|---|---|---|\n| A developer in the dashboard | `Authorization: Bearer dvt_...` (from `POST /v1/platform/login`) | `/v1/platform/...` |\n| A developer's backend | `Authorization: Bearer sk_live_...` (secret key) | `/v1/backend/...` |\n| An application's end users | `X-Publishable-Key: pk_live_...` header + a session cookie | `/v1/signup`, `/v1/login`, `/v1/me`, ... |\n\n**Quick start in this page**\n1. `POST /v1/platform/signup`, then `POST /v1/platform/login`. Copy the `token`, click *Authorize* and paste it under **developerToken**.\n2. `POST /v1/platform/applications` with a name. The response shows the **secret key once**; copy it. Note the `publishable_key` and `issuer`.\n3. Click *Authorize* again and paste the publishable key under **publishableKey** and the secret key under **secretKey**.\n4. As an end user: `POST /v1/signup` and `POST /v1/login`. The server sets an `HttpOnly` cookie named `session_<part of the publishable key>`, which your browser sends by itself. Then try `GET /v1/me`, `GET /v1/sessions` and `POST /v1/sessions/{id}/token`.\n5. As the developer's backend: `GET /v1/backend/users` lists that application's users.\n\n**Try the isolation**: create a second application, sign up the same email there with another password, and switch the publishable key. Each application sees only its own users. A token minted by one application fails verification against the other (different issuer, audience and keys), and a publishable key is refused on every secret-key endpoint.\n\n**Email verification and password reset (Stage 5)**\n- `POST /v1/signup` queues a verification email. In development (`MAIL_DRIVER=log`) the email, with its link and token, is printed in the server log; with `MAIL_DRIVER=smtp` and Mailpit it appears at http://localhost:8025.\n- The link looks like `<WEB_URL>/verify-email#token=...`. The token is in the URL fragment on purpose (browsers never send fragments to servers or in `Referer`). Copy it and send it to `POST /v1/verify-email`.\n- `POST /v1/password/forgot` always answers the same way, then `POST /v1/password/reset` with the token and a new password. Every session of that user is revoked.\n- Links work once. Verification links last 24 hours; reset links 1 hour. Tokens from one application never work in another.\n\nThis page only works on the same origin as the API, and the `Secure` cookie flag is off only when `APP_ENV=development`."
   },
   "servers": [
     {
@@ -21,6 +21,10 @@
     {
       "name": "Sessions",
       "description": "Cookie sessions: who am I, which devices, sign out. Needs a publishable key and the session cookie."
+    },
+    {
+      "name": "Email and passwords",
+      "description": "Verify an email address and recover a lost password. Needs a publishable key; tokens come from emails."
     },
     {
       "name": "Tokens",
@@ -398,6 +402,256 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/v1/verify-email": {
+      "post": {
+        "tags": [
+          "Email and passwords"
+        ],
+        "summary": "Confirm an email address",
+        "operationId": "verifyEmail",
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
+        "description": "Spends a verification token and marks the user's email as verified. A token works exactly once and expires after 24 hours. No session is needed: the token is the proof.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Verified",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid token, or malformed JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "invalid_token": {
+                    "value": {
+                      "error": {
+                        "code": "invalid_token",
+                        "message": "This link is invalid or has expired"
+                      }
+                    }
+                  },
+                  "invalid_json": {
+                    "value": {
+                      "error": {
+                        "code": "invalid_json",
+                        "message": "Request body must be valid JSON with only the expected fields"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/InvalidPublishableKey"
+          }
+        }
+      }
+    },
+    "/v1/verify-email/resend": {
+      "post": {
+        "tags": [
+          "Email and passwords"
+        ],
+        "summary": "Send the verification email again",
+        "operationId": "resendVerification",
+        "security": [
+          {
+            "publishableKey": [],
+            "cookieAuth": []
+          }
+        ],
+        "description": "For the signed-in user. A new link replaces any older one. At most one email per minute per user.",
+        "responses": {
+          "202": {
+            "description": "Queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "description": "Already verified",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "already_verified",
+                    "message": "This email address is already verified"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "An email was sent less than a minute ago",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "rate_limited",
+                    "message": "A verification email was sent a moment ago. Try again in a minute"
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/password/forgot": {
+      "post": {
+        "tags": [
+          "Email and passwords"
+        ],
+        "summary": "Start a password reset",
+        "operationId": "forgotPassword",
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
+        "description": "Always returns the same `202` and body, whether or not an account exists for the email, so it cannot be used to discover who has an account. If the account exists, a reset email is queued (at most one per minute; extra requests are silently ignored). A new link replaces any earlier one.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForgotBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted, always",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "message": "If an account exists for that email, we have sent instructions to reset the password."
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidJSON"
+          },
+          "401": {
+            "$ref": "#/components/responses/InvalidPublishableKey"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/password/reset": {
+      "post": {
+        "tags": [
+          "Email and passwords"
+        ],
+        "summary": "Choose a new password",
+        "operationId": "resetPassword",
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
+        "description": "Spends a reset token (valid once, for 1 hour), sets the new password, and **revokes every existing session of that user**. The user must log in again. Access tokens already issued stay valid for at most their 60-second lifetime.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Password changed; all sessions revoked"
+          },
+          "400": {
+            "description": "Invalid token, or malformed JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "invalid_token",
+                    "message": "This link is invalid or has expired"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/InvalidPublishableKey"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
           }
         }
       }
@@ -1449,6 +1703,22 @@
             }
           }
         }
+      },
+      "InvalidToken": {
+        "description": "The token is unknown, expired, already used, belongs to another application, or is for a different purpose. All of these look identical on purpose.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "invalid_token",
+                "message": "This link is invalid or has expired"
+              }
+            }
+          }
+        }
       }
     },
     "schemas": {
@@ -1502,6 +1772,10 @@
           "email": {
             "type": "string",
             "format": "email"
+          },
+          "email_verified": {
+            "type": "boolean",
+            "description": "True once the user has used the link from the verification email (or completed a password reset)."
           }
         }
       },
@@ -1746,6 +2020,55 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "email_verified": {
+            "type": "boolean"
+          }
+        }
+      },
+      "TokenBody": {
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The one-time token from the email link (the part after `#token=`)",
+            "example": "Xk3f9aQ2mZ7cVb1nT4yL8wHpXk3f9aQ2mZ7cVb1nT4y"
+          }
+        }
+      },
+      "ForgotBody": {
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "alice@example.com"
+          }
+        }
+      },
+      "ResetBody": {
+        "type": "object",
+        "required": [
+          "token",
+          "password"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128,
+            "description": "The new password. Checked before the token is spent, so a too-short password does not burn the link."
           }
         }
       }

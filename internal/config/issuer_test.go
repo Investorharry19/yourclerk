@@ -15,9 +15,9 @@ func TestIssuerAndDocs(t *testing.T) {
 		{"dev custom port", map[string]string{"DATABASE_URL": "x", "PORT": "9000"}, "http://localhost:9000", true, false},
 		{"trailing slash trimmed", map[string]string{"DATABASE_URL": "x", "ISSUER": "https://auth.example.com/"}, "https://auth.example.com", true, false},
 		{"issuer without scheme", map[string]string{"DATABASE_URL": "x", "ISSUER": "auth.example.com"}, "", false, true},
-		{"prod needs https", map[string]string{"DATABASE_URL": "x", "APP_ENV": "production", "SECRET_KEY": prodSecret}, "", false, true},
-		{"prod https ok, docs off", map[string]string{"DATABASE_URL": "x", "APP_ENV": "production", "SECRET_KEY": prodSecret, "ISSUER": "https://auth.example.com"}, "https://auth.example.com", false, false},
-		{"docs forced on in prod", map[string]string{"DATABASE_URL": "x", "APP_ENV": "production", "SECRET_KEY": prodSecret, "ISSUER": "https://a.example.com", "ENABLE_DOCS": "true"}, "https://a.example.com", true, false},
+		{"prod needs https", map[string]string{"DATABASE_URL": "x", "APP_ENV": "production", "MAIL_DRIVER": "smtp", "MAIL_FROM": "App <no-reply@example.com>", "WEB_URL": "https://app.example.com", "SECRET_KEY": prodSecret}, "", false, true},
+		{"prod https ok, docs off", map[string]string{"DATABASE_URL": "x", "APP_ENV": "production", "MAIL_DRIVER": "smtp", "MAIL_FROM": "App <no-reply@example.com>", "WEB_URL": "https://app.example.com", "SECRET_KEY": prodSecret, "ISSUER": "https://auth.example.com"}, "https://auth.example.com", false, false},
+		{"docs forced on in prod", map[string]string{"DATABASE_URL": "x", "APP_ENV": "production", "MAIL_DRIVER": "smtp", "MAIL_FROM": "App <no-reply@example.com>", "WEB_URL": "https://app.example.com", "SECRET_KEY": prodSecret, "ISSUER": "https://a.example.com", "ENABLE_DOCS": "true"}, "https://a.example.com", true, false},
 		{"docs garbage", map[string]string{"DATABASE_URL": "x", "ENABLE_DOCS": "perhaps"}, "", false, true},
 	}
 	for _, tc := range tests {

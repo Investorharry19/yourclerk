@@ -8,12 +8,14 @@ import (
 	nethttp "net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Investorharry19/yourclerk/internal/auth"
+	appmail "github.com/Investorharry19/yourclerk/internal/mail"
 )
 
 type fakeDB struct{ err error }
@@ -43,13 +45,16 @@ func (c *testClock) Advance(d time.Duration) {
 
 // env is a running server over the in-memory world, with a controllable clock.
 type env struct {
-	t     *testing.T
-	clock *testClock
-	world *fakeWorld
-	ts    *auth.TokenService
-	srv   *httptest.Server
-	url   string
+	t      *testing.T
+	clock  *testClock
+	world  *fakeWorld
+	ts     *auth.TokenService
+	sealer *auth.Sealer
+	srv    *httptest.Server
+	url    string
 }
+
+const testWebURL = "https://app.example.test"
 
 func newEnv(t *testing.T, mutate ...func(*Options)) *env {
 	t.Helper()
@@ -62,13 +67,18 @@ func newEnv(t *testing.T, mutate ...func(*Options)) *env {
 		t.Fatal(err)
 	}
 	e.ts = ts
+	e.sealer, err = auth.NewSealer("http-test-secret-http-test-secret-12")
+	if err != nil {
+		t.Fatal(err)
+	}
 	opts := Options{Now: e.clock.Now, EnableDocs: true}
 	for _, m := range mutate {
 		m(&opts)
 	}
 	e.srv.Config.Handler = NewServer(Deps{
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DB: fakeDB{},
-		Registry: e.world, Developers: e.world, Apps: e.world, Tenants: e.world, Tokens: ts, Options: opts,
+		Registry: e.world, Developers: e.world, Apps: e.world, Tenants: e.world, Tokens: ts,
+		Email: &EmailDeps{Sealer: e.sealer, WebURL: testWebURL}, Options: opts,
 	}).Handler()
 	e.srv.Start()
 	t.Cleanup(e.srv.Close)
@@ -217,4 +227,44 @@ func (a *actor) token() string {
 		a.e.t.Fatalf("token: %d %s", st, body)
 	}
 	return decode[tokenResponse](a.e.t, body).Token
+}
+
+// --- email helpers ---
+
+// mails returns the emails queued for a recipient in an application, oldest first,
+// decrypted the way the worker would.
+func (e *env) mails(appID, to string) []appmail.Message {
+	e.t.Helper()
+	e.world.mu.Lock()
+	defer e.world.mu.Unlock()
+	var out []appmail.Message
+	for _, m := range e.world.outbox {
+		if m.appID == appID && m.to == to {
+			msg, err := appmail.Open(e.sealer, appID, m.payload)
+			if err != nil {
+				e.t.Fatalf("queued email unreadable: %v", err)
+			}
+			out = append(out, msg)
+		}
+	}
+	return out
+}
+
+var tokenInLink = regexp.MustCompile(`#token=([A-Za-z0-9_-]{43})`)
+
+// linkToken pulls the one-time token out of an email's link.
+func linkToken(t *testing.T, m appmail.Message) string {
+	t.Helper()
+	g := tokenInLink.FindStringSubmatch(m.Text)
+	if g == nil {
+		t.Fatalf("no token link in email:\n%s", m.Text)
+	}
+	return g[1]
+}
+
+func tokenBodyJSON(token string) string { return `{"token":"` + token + `"}` }
+
+func resetBodyJSON(token, pw string) string {
+	b, _ := json.Marshal(map[string]string{"token": token, "password": pw})
+	return string(b)
 }

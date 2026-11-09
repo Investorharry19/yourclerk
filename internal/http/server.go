@@ -46,6 +46,7 @@ type Deps struct {
 	Apps       store.DeveloperApps // a developer's applications
 	Tenants    TenantProvider      // per-application users and sessions
 	Tokens     TokenIssuer         // per-application access tokens and JWKS
+	Email      *EmailDeps          // nil disables verification and reset emails
 	Options    Options
 }
 
@@ -57,13 +58,14 @@ type Server struct {
 	apps       store.DeveloperApps
 	tenants    TenantProvider
 	tokens     TokenIssuer
+	email      *EmailDeps
 	opts       Options
 }
 
 func NewServer(d Deps) *Server {
 	return &Server{
 		log: d.Log, db: d.DB, registry: d.Registry, developers: d.Developers,
-		apps: d.Apps, tenants: d.Tenants, tokens: d.Tokens, opts: d.Options.withDefaults(),
+		apps: d.Apps, tenants: d.Tenants, tokens: d.Tokens, email: d.Email.normalized(), opts: d.Options.withDefaults(),
 	}
 }
 
@@ -93,11 +95,15 @@ func (s *Server) Handler() nethttp.Handler {
 			r.Use(s.resolveApplication)
 			r.Post("/signup", s.handleSignup)
 			r.Post("/login", s.handleLogin)
+			r.Post("/verify-email", s.handleVerifyEmail)
+			r.Post("/password/forgot", s.handleForgotPassword)
+			r.Post("/password/reset", s.handleResetPassword)
 
 			r.Group(func(r chi.Router) {
 				r.Use(s.requireAuth)
 				r.Get("/me", s.handleMe)
 				r.Post("/logout", s.handleLogout)
+				r.Post("/verify-email/resend", s.handleResendVerification)
 				r.Get("/sessions", s.handleListSessions)
 				r.Delete("/sessions/{id}", s.handleRevokeSession)
 				r.Post("/sessions/{id}/token", s.handleIssueToken)

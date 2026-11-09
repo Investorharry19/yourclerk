@@ -22,10 +22,10 @@ vet:
 	go vet ./...
 
 test: ## run all tests (DB tests need TEST_DATABASE_URL)
-	go test ./... -count=1
+	go test ./... -count=1 -p 1
 
 test-race: ## needs cgo; works on Linux and in CI
-	go test ./... -race -count=1
+	go test ./... -race -count=1 -p 1
 
 migrate-up:
 	$(MIGRATE) up

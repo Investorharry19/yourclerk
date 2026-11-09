@@ -52,7 +52,7 @@ func (s *AppStore) GetLiveSession(ctx context.Context, tokenHash []byte, now, id
 	)
 	err := s.pool.QueryRow(ctx,
 		`SELECT s.id::text, s.user_id::text, s.user_agent, s.ip, s.created_at, s.last_active_at, s.expires_at,
-		        u.email, u.created_at, u.updated_at
+		        u.email, u.created_at, u.updated_at, u.email_verified_at
 		 FROM sessions s
 		 JOIN users u ON u.application_id = s.application_id AND u.id = s.user_id
 		 WHERE s.application_id = $1
@@ -62,7 +62,7 @@ func (s *AppStore) GetLiveSession(ctx context.Context, tokenHash []byte, now, id
 		   AND s.last_active_at > $4`,
 		s.appID, tokenHash, now, idleCutoff,
 	).Scan(&sess.ID, &sess.UserID, &sess.UserAgent, &sess.IP, &sess.CreatedAt, &sess.LastActiveAt, &sess.ExpiresAt,
-		&user.Email, &user.CreatedAt, &user.UpdatedAt)
+		&user.Email, &user.CreatedAt, &user.UpdatedAt, &user.EmailVerifiedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, User{}, ErrNotFound
 	}
@@ -133,7 +133,8 @@ func (s *AppStore) RevokeSession(ctx context.Context, userID, sessionID string, 
 // tenant, and each row is judged by its own application's settings.
 func (s *Store) DeleteExpiredSessions(ctx context.Context, now time.Time) (int64, error) {
 	tag, err := s.Pool.Exec(ctx,
-		`DELETE FROM sessions s USING applications a
+		`-- cross-tenant: maintenance
+		 DELETE FROM sessions s USING applications a
 		 WHERE a.id = s.application_id
 		   AND (s.expires_at <= $1
 		     OR s.last_active_at <= $1::timestamptz - a.session_idle_timeout_seconds * interval '1 second'

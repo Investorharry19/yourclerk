@@ -94,3 +94,49 @@ func TestCookieSuffix(t *testing.T) {
 		}
 	}
 }
+
+func TestOneTimeTokens(t *testing.T) {
+	tok, hash, err := NewOneTimeToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsWellFormedToken(tok) || !bytes.Equal(hash, HashToken(tok)) || len(hash) != 32 {
+		t.Fatalf("token %q / hash wrong", tok)
+	}
+	if tok2, _, _ := NewOneTimeToken(); tok2 == tok {
+		t.Fatal("duplicate token")
+	}
+	for _, bad := range []string{"", "short", tok + "x", tok[:42], " " + tok, tok + "\n", strings.Repeat("!", 43)} {
+		if IsWellFormedToken(bad) {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+}
+
+func TestSealer(t *testing.T) {
+	if _, err := NewSealer("short"); err == nil {
+		t.Fatal("accepted a short secret")
+	}
+	s, _ := NewSealer("sealer-secret-sealer-secret-1234567")
+	blob, err := s.Seal([]byte("hello link"), "app-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(blob, []byte("hello")) {
+		t.Fatal("plaintext visible in sealed blob")
+	}
+	if got, err := s.Open(blob, "app-1"); err != nil || string(got) != "hello link" {
+		t.Fatalf("open: %q %v", got, err)
+	}
+	if _, err := s.Open(blob, "app-2"); err == nil {
+		t.Fatal("opened under another binding")
+	}
+	other, _ := NewSealer("another-secret-another-secret-12345")
+	if _, err := other.Open(blob, "app-1"); err == nil {
+		t.Fatal("opened with another secret")
+	}
+	// The sealer's key is not the signing-key encryption key.
+	if bytes.Equal(s.key, deriveEncryptionKey("sealer-secret-sealer-secret-1234567")) {
+		t.Fatal("sealer shares the signing-key encryption key")
+	}
+}

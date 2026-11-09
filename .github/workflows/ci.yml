@@ -36,9 +36,9 @@ jobs:
       - name: Migrate down and up again
         run: make migrate-down && make migrate-up
       - name: Test
-        run: go test ./... -race -count=1
+        run: go test ./... -race -count=1 -p 1
       - name: SDK vet and test
         working-directory: sdk/go
         run: |
           go vet ./...
-          go test ./... -race -count=1
+          go test ./... -race -count=1 -p 1

@@ -17,13 +17,14 @@ const (
 )
 
 type backendUser struct {
-	ID        string    `json:"id"`
-	Email     string    `json:"email"`
-	CreatedAt time.Time `json:"created_at"`
+	ID            string    `json:"id"`
+	Email         string    `json:"email"`
+	EmailVerified bool      `json:"email_verified"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 func toBackendUser(u store.User) backendUser {
-	return backendUser{ID: u.ID, Email: u.Email, CreatedAt: u.CreatedAt}
+	return backendUser{ID: u.ID, Email: u.Email, EmailVerified: u.EmailVerified(), CreatedAt: u.CreatedAt}
 }
 
 func intParam(r *nethttp.Request, name string, def, min, max int) (int, bool) {

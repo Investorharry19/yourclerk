@@ -79,4 +79,9 @@ type Tenant interface {
 	TouchSession(ctx context.Context, sessionID string, now time.Time) error
 	ListLiveSessions(ctx context.Context, userID string, now, idleCutoff time.Time) ([]Session, error)
 	RevokeSession(ctx context.Context, userID, sessionID string, now time.Time) (bool, error)
+
+	// Email verification and password reset (verification.go).
+	IssueEmailToken(ctx context.Context, userID string, purpose EmailPurpose, tokenHash []byte, now, expiresAt time.Time, cooldown time.Duration, msg OutboxMessage) (bool, error)
+	ConsumeVerifyToken(ctx context.Context, tokenHash []byte, now time.Time) (User, error)
+	ResetPassword(ctx context.Context, tokenHash []byte, newPasswordHash string, now time.Time) (User, error)
 }
